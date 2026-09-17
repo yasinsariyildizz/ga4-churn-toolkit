@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ga4-churn-toolkit"
+version = "0.0.1"
+description = "BigQuery-first GA4 analytics toolkit demo. Initial release validates the package/notebook architecture with basic GA4 metrics."
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+dependencies = [
+  "google-cloud-bigquery>=3.20,<4"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ga4_churn = ["sql/*.sql"]
