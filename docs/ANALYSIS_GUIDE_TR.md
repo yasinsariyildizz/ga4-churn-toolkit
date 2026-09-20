@@ -1,55 +1,70 @@
-# GA4 Churn Toolkit — Analiz ve Yorumlama Rehberi (TR)
+# GA4 Churn Toolkit — Analiz ve Yorumlama Rehberi
 
-Bu doküman, `ga4-churn-toolkit` içindeki **basic purchase-based churn** analizinin nasıl çalıştığını, üretilen metriklerin ve grafiklerin ne anlama geldiğini ve sonuçların nasıl yorumlanması gerektiğini açıklar.
+Bu rehber, `ga4-churn-toolkit` içindeki purchase-based churn akışının metodolojisini ve çıktıların nasıl okunması gerektiğini açıklar. Hedef kitle; GA4 BigQuery export verisiyle çalışan digital analytics, marketing analytics, CRM analytics ve BI ekipleridir.
 
-> Bu sürüm özellikle basit tutulmuştur. Amaç, GA4 BigQuery export verisi üzerinden anlaşılır ve tekrar kullanılabilir bir churn analizi sağlamaktır. Bu araç churn'ü tahmin etmez; seçilen bir hareketsizlik eşiğine göre **mevcut kullanıcıları sınıflandırır**.
+Bu çalışma bir **predictive churn modeli** değildir. Kullanıcıları gelecekte churn etme olasılıklarına göre skorlamaz. Mevcut GA4 purchase history üzerinden purchaser lifecycle'ı çıkarır ve seçilen inactivity window'a göre kullanıcıları sınıflandırır.
 
 ---
 
-## 1. Analizin temel fikri
+## 1. Analitik çerçeve
 
-Analiz purchase davranışına dayanır.
+Temel yaklaşım purchaser-level recency mantığıdır.
 
-Bir kullanıcı en az bir kez `purchase` event'i oluşturmuşsa **purchaser** kabul edilir. Kullanıcının son purchase tarihinden analiz tarihine kadar geçen süre hesaplanır:
+Bir `user_pseudo_id` en az bir `purchase` event'i üretmişse purchaser base'e dahil edilir. Her purchaser için son purchase tarihi ile dataset'teki son gözlem tarihi arasındaki fark hesaplanır:
 
 ```text
 days_since_last_purchase = analysis_date - last_purchase_date
 ```
 
-Churn analizi çalıştırılırken bir eşik verilir:
+Churn cutoff analiz çalıştırılırken verilir:
 
 ```python
 analysis.churn_analysis(90)
 ```
 
-Bu örnekte 90 gün eşiktir.
-
-Sınıflandırma:
+90 günlük örnekte segmentasyon mantığı:
 
 ```text
 purchase_count = 0
 → never_purchased
 
-purchase_count > 0 ve days_since_last_purchase <= threshold
+purchase_count > 0
+ve days_since_last_purchase <= 90
 → active_purchaser
 
-purchase_count > 0 ve days_since_last_purchase > threshold
+purchase_count > 0
+ve days_since_last_purchase > 90
 → churned
 ```
 
-### Analiz tarihi nedir?
+Buradaki churn tanımı bir **behavioral inactivity rule**'dur. Abonelik iptali, CRM status'ü veya resmi müşteri kaybı kaydı değildir.
 
-Kullanıcı ayrıca bir analiz tarihi girmez. Araç kaynak veride bulunan en güncel `event_date` değerini kullanır:
+---
+
+## 2. Metric scope ve analiz tarihi
+
+Analiz tarihi ayrıca input olarak girilmez:
 
 ```text
 analysis_date = MAX(event_date)
 ```
 
-Bu nedenle sonuçlar, dataset'in ne kadar güncel olduğuna bağlıdır. Dataset eskiyse churn sonucu da o eski tarihe göre hesaplanır.
+Bu tercih workflow'u basitleştirir; ancak data freshness kritik hale gelir.
+
+Örnek:
+
+```text
+Bugün: 20 Eylül
+Dataset'in son event_date'i: 31 Ağustos
+```
+
+Bu durumda churn classification 20 Eylül'e göre değil, 31 Ağustos'a göre yapılır.
+
+Bu nedenle churn sonucunu paylaşmadan önce her zaman `analysis_date` kontrol edilmelidir.
 
 ---
 
-## 2. Kullanıcıdan alınan inputlar
+## 3. Input modeli
 
 ```python
 analysis = ChurnAnalysis(
@@ -60,18 +75,18 @@ analysis = ChurnAnalysis(
 )
 ```
 
-| Input | Açıklama |
+| Input | Kullanım |
 |---|---|
-| `project_id` | GA4 export verisinin bulunduğu GCP projesi |
-| `dataset_id` | GA4 BigQuery export dataset'i |
-| `table_id` | Kaynak tablo veya wildcard, örn. `events_*` |
+| `project_id` | GA4 export'un bulunduğu GCP project |
+| `dataset_id` | GA4 BigQuery export dataset |
+| `table_id` | Kaynak tablo veya wildcard (`events_*`) |
 | `output_dataset_id` | Analiz tablolarının yazılacağı dataset |
 
-Churn threshold burada verilmez. Eşik yalnızca `churn_analysis()` fonksiyonunda girilir.
+Churn threshold constructor'a verilmez. Bunun nedeni cutoff kararının purchase cadence incelendikten sonra verilmesidir.
 
 ---
 
-# 3. Önerilen çalışma sırası
+# 4. Önerilen workflow
 
 ```python
 analysis.dry_run()
@@ -80,17 +95,24 @@ analysis.purchase_day_distribution()
 analysis.churn_analysis(90)
 ```
 
-Bu sıra önemlidir. Her adım bir sonraki adımın yorumlanmasını kolaylaştırır.
+Bu akış şu sorulara cevap verir:
+
+```text
+1. Ne kadar data taranacak?
+2. Purchaser base nasıl görünüyor?
+3. Repeat purchase davranışına göre makul inactivity window ne olabilir?
+4. Seçilen cutoff'ta churn görünümü nasıl değişiyor?
+```
 
 ---
 
-# 4. `dry_run()` — Maliyet ve tarama kontrolü
+# 5. `dry_run()` — Query cost kontrolü
 
 ```python
 analysis.dry_run()
 ```
 
-Bu fonksiyon sorguları çalıştırmadan önce yaklaşık ne kadar verinin taranacağını kontrol eder.
+BigQuery sorguları çalıştırılmadan önce estimated bytes scanned gösterilir.
 
 Ana çıktı:
 
@@ -98,117 +120,104 @@ Ana çıktı:
 Estimated scan: X GB
 ```
 
-## Nasıl yorumlanır?
+Bu metrik business KPI değildir. Query footprint kontrolüdür.
 
-Bu değer analiz sonucu değildir. Yalnızca BigQuery sorgularının okuyacağı yaklaşık veri miktarını gösterir.
+Özellikle `table_id="events_*"` kullanılıyorsa export history'nin tamamı taranabilir.
 
-Özellikle:
+Kontrol edilmesi gerekenler:
 
-```python
-table_id="events_*"
-```
+- yanlış property / dataset seçimi,
+- gereksiz full-history scan,
+- beklenenden yüksek query volume,
+- test sırasında production-size dataset kullanımı.
 
-kullanılıyorsa tüm eşleşen tablolar taranabilir. Büyük GA4 export dataset'lerinde bu yüksek maliyet yaratabilir.
-
-### Ne zaman dikkat edilmeli?
-
-- Beklenenden çok daha yüksek GB/TB görünüyorsa
-- Yanlış dataset veya wildcard seçilmişse
-- Test için tüm tarihçeyi taramaya gerek yoksa
-
-Bu fonksiyon bir **güvenlik ve maliyet kontrol adımıdır**, analitik yorum üretmez.
+Ajans veya multi-client yapılarda bu adım cost governance açısından önemlidir.
 
 ---
 
-# 5. `create_base_table()` — Kullanıcı seviyesinde temel tablo
+# 6. `create_base_table()` — Purchaser-level analytical base
 
 ```python
 analysis.create_base_table()
 ```
 
-Bu adımın grain'i:
+Output grain:
 
 ```text
-1 satır = 1 user_pseudo_id
+1 row = 1 user_pseudo_id
 ```
 
-Ana çıktı tablosu:
+Çıktı tablo:
 
 ```text
 <output_dataset>.churn_base
 ```
 
-## Temel kolonlar
+Bu tablo churn analysis'in user-level feature layer'ıdır.
 
-| Kolon | Anlamı |
+## Ana kolonlar
+
+| Kolon | Tanım |
 |---|---|
-| `user_pseudo_id` | GA4 cihaz/tarayıcı bazlı kullanıcı tanımlayıcısı |
-| `first_event_date` | Kullanıcının dataset içindeki ilk event tarihi |
-| `last_event_date` | Kullanıcının son event tarihi |
-| `event_count` | Kullanıcının toplam event sayısı |
-| `session_count` | Kullanıcının distinct `ga_session_id` sayısı |
-| `purchase_count` | `purchase` event sayısı |
-| `revenue` | Purchase event'lerindeki toplam `ecommerce.purchase_revenue` |
-| `first_purchase_date` | İlk purchase tarihi |
-| `last_purchase_date` | Son purchase tarihi |
-| `analysis_date` | Kaynaktaki maksimum event tarihi |
-| `days_since_last_purchase` | Son purchase'tan analiz tarihine geçen gün |
+| `user_pseudo_id` | GA4 device/browser scoped user identifier |
+| `first_event_date` | Export içinde görülen ilk event tarihi |
+| `last_event_date` | Export içinde görülen son event tarihi |
+| `event_count` | Toplam event volume |
+| `session_count` | Distinct `ga_session_id` sayısı |
+| `purchase_count` | Purchase event sayısı |
+| `revenue` | `ecommerce.purchase_revenue` toplamı |
+| `first_purchase_date` | İlk gözlenen purchase tarihi |
+| `last_purchase_date` | Son gözlenen purchase tarihi |
+| `analysis_date` | Kaynak dataset'teki maksimum `event_date` |
+| `days_since_last_purchase` | Purchase recency |
 
-## Notebook KPI'ları
+## Users
 
-### Users
+Distinct `user_pseudo_id` sayısıdır. Gerçek kişi sayısı olarak yorumlanmamalıdır; GA4 identity scope nedeniyle aynı kişi farklı device/browser/cookie state altında birden fazla `user_pseudo_id` üretebilir.
 
-Dataset içindeki distinct `user_pseudo_id` sayısıdır.
+## Purchasers
 
-### Purchasers
+En az bir purchase event'i olan user base. Churn denominator'ının temelini oluşturur.
 
-En az bir purchase event'i olan kullanıcı sayısıdır.
+## One-time purchasers
 
-### One-time purchasers
+Sadece bir purchase kaydı olan kullanıcılar. Acquisition sonrası repeat davranışı oluşmamış purchaser'ları temsil eder.
 
-Sadece bir purchase event'i olan kullanıcı sayısıdır.
+## Repeat purchasers
 
-Bu grup churn analizinde özellikle önemlidir; tek sefer alışveriş yapan kullanıcılar genellikle repeat müşterilerden farklı davranır.
+Birden fazla purchase kaydı olan kullanıcılar. Repeat-purchase cadence analizinin ana gözlem kitlesidir.
 
-### Repeat purchasers
-
-Birden fazla purchase event'i olan kullanıcı sayısıdır.
-
-### Purchaser rate
+## Purchaser rate
 
 ```text
-purchasers / all users
+purchasers / observed users
 ```
 
-Bu metrik churn oranı değildir. Trafiğin ne kadarının purchaser'a dönüştüğünü gösteren basit bir kullanıcı payıdır.
+Bu bir conversion rate değildir; session-level funnel conversion ile karıştırılmamalıdır. User-level observed purchaser share'dir.
 
-### Repeat rate
+## Repeat rate
 
 ```text
 repeat purchasers / purchasers
 ```
 
-Purchaser tabanının ne kadarının tekrar satın alma davranışı gösterdiğini anlatır.
+Purchaser base'in ne kadarının birden fazla satın alma davranışı gösterdiğini özetler.
 
-### Revenue
+## Revenue
 
-Dataset içindeki purchase event'lerinin toplam historical revenue değeridir.
-
-> Bu değer muhasebe geliri olmak zorunda değildir. GA4 tracking doğruluğu, currency implementasyonu ve duplicate purchase event'leri sonucu etkileyebilir.
+GA4 purchase event'lerinde bulunan historical revenue toplamıdır. Duplicate purchase, transaction deduplication eksikliği, currency mapping, missing revenue ve consent / implementation gaps metriği etkileyebilir. GA4 revenue ile finance / ERP revenue'nun birebir aynı olması beklenmemelidir.
 
 ---
 
-# 6. `purchase_day_distribution()` — Satın alma aralıklarının analizi
+# 7. `purchase_day_distribution()` — Repeat-purchase cadence
 
 ```python
 analysis.purchase_day_distribution()
 ```
 
-Bu adım churn threshold seçmeden önce müşteri satın alma ritmini anlamak için kullanılır.
+Bu fonksiyon threshold seçmeden önce repurchase timing'in shape'ini anlamak için kullanılır.
 
-## Hesaplama mantığı
-
-Her kullanıcı için distinct purchase günleri sıralanır.
+Distinct purchase günleri user bazında sıralanır ve ardışık purchase günleri arasındaki fark hesaplanır.
 
 Örnek:
 
@@ -218,151 +227,98 @@ Her kullanıcı için distinct purchase günleri sıralanır.
 20 Şubat
 ```
 
-Gap'ler:
+üretilen gap'ler:
 
 ```text
 15 gün
 26 gün
 ```
 
-Aynı gün içinde iki purchase varsa aynı gün iki ayrı purchase günü olarak sayılmaz. Böylece sıfır günlük interval'ların dağılımı bozması engellenir.
+Aynı gün içindeki birden fazla purchase tek purchase date olarak değerlendirilir. Böylece order frequency ile day-gap distribution birbirine karıştırılmaz.
 
-> Buradaki analiz yalnızca en az iki farklı purchase gününe sahip kullanıcılar hakkında bilgi verir. One-time purchaser'lar gap distribution'a dahil değildir.
+One-time purchasers bu analize dahil değildir; çünkü hesaplanabilecek repeat interval yoktur.
 
 ---
 
-## 6.1 Gap Observations
+# 8. Distribution metrics
 
-Toplam gözlenen ardışık purchase interval sayısıdır.
+## Gap observations
 
-Örneğin bir kullanıcı 5 farklı günde purchase yaptıysa 4 gap üretir.
+Toplam ardışık purchase interval sayısıdır. Bir kullanıcı 5 distinct purchase date'e sahipse 4 gap observation üretir. Bu nedenle `gap observations != repeat purchasers` olması beklenen bir durumdur.
 
-Bu nedenle:
+## Mean gap
+
+Purchase interval ortalamasıdır. Long-tail behavior'dan etkilenir; tek başına inactivity cutoff olarak kullanılmamalıdır.
+
+## Median / P50
+
+Repeat-purchase cadence'in merkezi için daha robust bir referanstır.
 
 ```text
-gap observations != repeat purchaser count
+Median = 32 gün
 ```
 
-olması normaldir.
+ise observed gap'lerin yaklaşık yarısı 32 gün veya daha kısadır.
 
----
+## P25 / P75
 
-## 6.2 Mean Gap
-
-Purchase interval'larının aritmetik ortalamasıdır.
-
-Uzun bekleme sürelerinden kolay etkilenir.
-
-Örneğin gap'ler:
-
-```text
-10, 12, 14, 15, 180
-```
-
-ise mean oldukça yükselir.
-
-Bu nedenle mean'i tek başına threshold seçmek için kullanmak doğru değildir.
-
----
-
-## 6.3 Median / P50
-
-Purchase interval'larının ortanca değeridir.
-
-```text
-Median = 30 gün
-```
-
-ise gözlenen gap'lerin yaklaşık yarısı 30 gün veya daha kısa, yarısı daha uzundur.
-
-Median, uç değerlerden mean'e göre daha az etkilenir.
-
----
-
-## 6.4 P25 ve P75
-
-P25, gap'lerin %25'inin bu değerin altında/eşit olduğunu; P75 ise %75'inin altında/eşit olduğunu gösterir.
-
-Örneğin:
+Purchase cadence'in middle 50% range'ini gösterir.
 
 ```text
 P25 = 18
-P75 = 55
+P75 = 56
 ```
 
-ise purchase interval'larının orta %50'lik bölümü yaklaşık 18–55 gün arasındadır.
+ise core repeat behavior yaklaşık 18–56 gün bandında yoğunlaşıyor olabilir.
 
----
-
-## 6.5 IQR
+## IQR
 
 ```text
 IQR = P75 - P25
 ```
 
-Dağılımın orta %50'sinin ne kadar yayıldığını gösterir.
+Behavioral dispersion göstergesidir. Dar IQR daha standardize repeat cadence'e, geniş IQR ise daha heterojen purchaser behavior'a işaret edebilir.
 
-Düşük IQR → müşterilerin tekrar satın alma ritmi daha tutarlı olabilir.
+## P90 / P95
 
-Yüksek IQR → kullanıcı davranışı heterojendir; tek churn threshold tüm müşteriler için aynı derecede anlamlı olmayabilir.
-
----
-
-## 6.6 P90 ve P95
-
-Churn threshold tartışmasında en faydalı değerlerdendir.
-
-Örnek:
+Threshold calibration için upper-tail referanslardır.
 
 ```text
-P90 = 82 gün
+P90 = 84 gün
+P95 = 126 gün
 ```
 
-Bu, gözlenen repeat-purchase interval'larının yaklaşık %90'ının 82 gün veya daha kısa olduğunu ifade eder.
+Bu durumda 90 günlük cutoff, historical repeat intervals'ın üst bandına yakın bir noktadadır.
 
-90 günlük churn threshold seçilirse bu eşik normal repeat davranışının oldukça üst tarafında kalıyor olabilir.
+P90 veya P95 doğrudan churn threshold değildir; behavioral baseline sağlar. Category cycle, replenishment period, seasonality ve CRM strategy ayrıca değerlendirilmelidir.
 
-Ancak:
+## Standard deviation
 
-> P90 otomatik olarak “doğru churn threshold” değildir.
+Purchase-gap volatility'yi gösterir. Yüksek değer, purchaser'ların repurchase cadence açısından homojen olmadığını gösterebilir.
 
-P90 yalnızca davranışsal referans noktasıdır. Sezonluk ürünler, uzun satın alma döngüsü, abonelik yapısı veya veri penceresi threshold yorumunu değiştirebilir.
-
----
-
-## 6.7 Standard Deviation
-
-Gap'lerin ortalama etrafındaki değişkenliğini ölçer.
-
-Yüksek standart sapma, kullanıcıların satın alma aralıklarının birbirinden ciddi şekilde farklı olabileceğini gösterir.
-
----
-
-## 6.8 Coefficient of Variation (CV)
+## Coefficient of Variation
 
 ```text
 CV = standard deviation / mean
 ```
 
-Farklı ölçeklerdeki dağılımların göreli değişkenliğini anlamak için kullanılır.
+Scale-independent dispersion measure olarak kullanılır.
 
-Kabaca:
+Pratik diagnostic:
 
 ```text
-CV < 0.5   → daha konsantre davranış
-0.5–1.0    → orta düzey değişkenlik
-CV >= 1.0  → yüksek değişkenlik
+CV < 0.5   → relatively concentrated cadence
+0.5–1.0    → moderate variability
+CV >= 1.0  → high variability
 ```
 
-Bu sınırlar evrensel kurallar değildir; sadece yorumlama yardımcılarıdır.
-
-Yüksek CV varsa tek threshold kullanımına daha temkinli yaklaşılmalıdır.
+Bu seviyeler hard rule değildir.
 
 ---
 
-# 7. Purchase-gap histogram nasıl okunur?
+# 9. Purchase-gap histogram
 
-Grafik gap'leri bucket'lara ayırır:
+Bucket'lar:
 
 ```text
 0–7
@@ -375,219 +331,172 @@ Grafik gap'leri bucket'lara ayırır:
 366+
 ```
 
-Her bar o aralıkta kaç purchase interval gözlendiğini gösterir.
+Her bar ilgili interval bandındaki observation volume'u gösterir.
 
-## Örnek yorum
+Yoğunluk 15–30 ve 31–60 bucket'larında ise purchaser base'in önemli kısmı iki aylık window içinde repeat purchase yapıyor olabilir.
 
-Eğer en büyük bar:
+181+ bucket'ları güçlüyse şu faktörler incelenmelidir:
 
-```text
-15–30 gün
-```
+- long replenishment cycle,
+- seasonal purchase pattern,
+- farklı product/category mix,
+- high-value / low-frequency segmentler,
+- çok uzun observation window.
 
-ise repeat purchase davranışının yoğun bir kısmı bu aralıkta gerçekleşiyor olabilir.
-
-Eğer 181+ bucket'larında da ciddi yoğunluk varsa:
-
-- uzun satın alma döngüsü olabilir,
-- müşteri segmentleri farklı davranıyor olabilir,
-- sezonluk pattern olabilir,
-- uzun veri geçmişi nedeniyle tail uzuyor olabilir.
-
-### Histogramdan ne çıkarılmamalı?
-
-“En yüksek bar 31–60, o halde churn threshold 60 gündür” sonucu otomatik çıkarılmamalıdır.
-
-Histogram davranışın şeklini gösterir, churn için business kararını tek başına vermez.
+Histogram threshold kararını tek başına vermez; distribution shape'i görünür hale getirir.
 
 ---
 
-# 8. Cumulative Repeat-Purchase Coverage grafiği
+# 10. Cumulative repeat-purchase coverage
 
-Bu grafik şu soruya cevap verir:
+Bu grafik şu soruyu cevaplar:
 
-> Gözlenen repeat purchase interval'larının yüzde kaçı X gün içinde gerçekleşiyor?
+```text
+Observed purchase intervals'ın yüzde kaçı X gün içinde gerçekleşti?
+```
 
 Örnek:
 
 ```text
-30 gün → %48
-60 gün → %72
-90 gün → %89
+30 gün  → %46
+60 gün  → %73
+90 gün  → %89
 180 gün → %97
 ```
 
-Yorum:
+90 günlük cutoff için %89 coverage varsa historical repeat intervals'ın yaklaşık %89'u 90 gün veya daha kısadır.
 
-- Repeat purchase interval'larının %48'i 30 gün içinde
-- %72'si 60 gün içinde
-- %89'u 90 gün içinde gerçekleşmiş
-
-Bu grafik churn threshold seçimi için histogramdan daha doğrudan bir referans sağlar.
-
-Örneğin 90 günlük threshold kullanılıyorsa ve coverage %89 ise seçilen eşik gözlenen historical repeat interval'ların yaklaşık %89'unu kapsıyor demektir.
-
-Bu yine “89% kullanıcı 90 günde döner” anlamına gelmez. Metric interval bazlıdır, kullanıcı bazlı değildir.
+Bu, kullanıcıların %89'unun 90 günde geri geldiği anlamına gelmez. Metric scope interval-level'dır, user-level değildir.
 
 ---
 
-# 9. Otomatik Purchase Behavior Insights
+# 11. Purchase behavior readout
 
-Araç dağılım sonuçlarından açıklayıcı insight cümleleri üretir.
+Notebook, distribution sonuçlarından kısa analyst notes üretir.
 
 Örnek:
 
 ```text
-The median repeat-purchase interval is 31 days.
-The middle 50% of repeat-purchase intervals fall between 18 and 55 days.
-The distribution is right-skewed.
-Repurchase timing is highly variable.
+Median repeat-purchase interval: 31 days
+Middle 50% range: 18–55 days
+Distribution: right-skewed
+Cadence variability: high
 ```
 
-Bu insight'lar deterministik özetlerdir; yapay zekâ tahmini değildir.
-
-Amaç, analyst'in sayıları hızlı yorumlamasına yardımcı olmaktır.
+Bu notların amacı output'u hızlı scan edilebilir hale getirmektir. Threshold kararı analyst / business owner tarafından verilmelidir.
 
 ---
 
-# 10. `churn_analysis(threshold)`
-
-Örnek:
+# 12. `churn_analysis(threshold)` — Purchaser inactivity classification
 
 ```python
 analysis.churn_analysis(90)
 ```
 
-Bu adım verilen threshold'a göre purchaser'ları sınıflandırır.
-
-## Churn rate formülü
+Churn rate:
 
 ```text
-churn rate = churned purchasers / all purchasers
+churned purchasers / all purchasers
 ```
 
-Never-purchased kullanıcılar denominator'a dahil edilmez.
+Never-purchased users denominator dışında tutulur.
 
 Örnek:
 
 ```text
-Total users        1,000,000
-Purchasers           200,000
-Churned               60,000
+Observed users      1,000,000
+Purchasers            200,000
+Churned                60,000
 
-Churn Rate = 60,000 / 200,000 = 30%
+Churn rate = 60,000 / 200,000 = 30%
 ```
 
-Yanlış hesap:
-
-```text
-60,000 / 1,000,000
-```
-
-çünkü 800,000 never-purchased kullanıcı churn risk tabanına hiç girmemiştir.
+60,000 / 1,000,000 kullanmak purchaser churn metric'ini dilute eder.
 
 ---
 
-# 11. Churn Analysis KPI'ları
+# 13. Churn KPI'ları
 
-## Purchasers
+## Active purchasers
 
-En az bir purchase yapan toplam kullanıcı sayısı.
+Son purchase'ı seçilen inactivity window içinde kalan purchaser'lar.
 
-## Active Purchasers
+## Churned purchasers
 
-Son purchase'ı threshold içinde kalan purchaser'lar.
+Son purchase'tan bu yana geçen süre cutoff'u aşan purchaser'lar.
 
-## Churned Users
+## One-time purchasers
 
-Son purchase'ından beri geçen süre threshold'u aşan purchaser'lar.
+Acquisition sonrası repeat satın alma davranışı göstermemiş purchaser base.
 
-## One-Time Purchasers
+## Churned one-time buyers
 
-Sadece bir purchase yapmış purchaser'lar.
+Bir purchase sonrası cutoff'u aşmış kullanıcılar.
 
-Bu segment churn sonuçlarında çok önemlidir; bir kez satın alıp geri dönmeyen kullanıcılar repeat purchaser'lardan farklı değerlendirilmelidir.
+## Churned repeat buyers
 
-## Churned One-Time Buyers
+Repeat history olmasına rağmen recency threshold'u aşmış kullanıcılar.
 
-Bir purchase yapmış ve threshold'u aşmış kullanıcılar.
-
-## Churned Repeat Buyers
-
-Birden fazla purchase yapmış ancak son purchase sonrası threshold'u aşmış kullanıcılar.
-
-## Churned Revenue Share
-
-```text
-historical revenue of churned users
------------------------------------
-historical revenue of all purchasers
-```
-
-Bu metric:
-
-> “Kaybettiğimiz revenue budur”
-
-anlamına gelmez.
-
-Bu kullanıcıların geçmişte ürettiği revenue payını gösterir. Future lost revenue tahmini değildir.
+Bu ayrım CRM activation açısından önemlidir. One-time lapse ile established repeat purchaser lapse aynı lifecycle problem olmayabilir.
 
 ---
 
-# 12. Status Diagnostics tablosu
-
-Active purchaser, churned ve never-purchased grupları karşılaştırılır.
-
-Kolonlar arasında:
-
-- Users
-- Avg purchases
-- Median purchases
-- Avg revenue
-- Median revenue
-- Avg inactive days
-
-bulunur.
-
-## Mean ve median neden birlikte gösteriliyor?
-
-Revenue ve purchase count dağılımları genellikle sağa çarpıktır.
-
-Örneğin:
+# 14. Churned historical revenue share
 
 ```text
-Active avg revenue   = 1,200
-Active median revenue = 320
+historical revenue from churned purchasers
+-----------------------------------------
+historical revenue from all purchasers
 ```
 
-ise birkaç yüksek değerli kullanıcı ortalamayı yukarı çekiyor olabilir.
-
-Bu nedenle mean'i median ile birlikte okumak gerekir.
-
----
-
-# 13. Purchaser Status grafiği
-
-Active ve churned purchaser sayısını karşılaştırır.
-
-Bu grafik mutlak hacmi gösterir.
+Bu metric revenue exposure view sağlar.
 
 Örnek:
 
 ```text
-Active   120,000
-Churned   80,000
+Churn rate = %25
+Churned historical revenue share = %41
 ```
 
-buradan churn rate yaklaşık %40 olarak düşünülebilir.
+ise churned segment geçmişte purchaser revenue'nun orantısız derecede büyük bir kısmını üretmiş olabilir.
 
-Ancak bar uzunluklarını tek başına değil, churn rate KPI ile birlikte değerlendirmek daha doğrudur.
+Bu metric `lost revenue`, `future revenue loss` veya `incremental revenue opportunity` olarak adlandırılmamalıdır. Historical contribution ile future loss aynı şey değildir.
 
 ---
 
-# 14. Churn Rate by Purchase Frequency grafiği
+# 15. Status diagnostics
 
-Purchaser'lar şu segmentlere ayrılır:
+Active, churned ve never-purchased gruplar karşılaştırılır.
+
+Öne çıkan kolonlar:
+
+- user volume,
+- average purchases,
+- median purchases,
+- average revenue,
+- median revenue,
+- average inactivity days.
+
+Mean + median birlikte okunmalıdır.
+
+```text
+Active avg revenue    = 1,250
+Active median revenue = 310
+```
+
+farkı high-value tail'in mean'i yukarı çektiğini gösterebilir. Digital commerce datalarında revenue distribution çoğu zaman right-skewed olduğu için median business readout'ta özellikle değerlidir.
+
+---
+
+# 16. Purchaser status chart
+
+Active ve churned purchaser base'in absolute volume karşılaştırmasıdır. Grafik rate değil volume gösterir. Bar size, churn rate ve purchaser base size birlikte değerlendirilmelidir.
+
+---
+
+# 17. Churn rate by purchase frequency
+
+Segmentler:
 
 ```text
 1 purchase
@@ -596,40 +505,26 @@ Purchaser'lar şu segmentlere ayrılır:
 6+ purchases
 ```
 
-Her segment için churn rate hesaplanır.
-
-## Neden önemli?
-
-Tek seferlik purchaser'lar ile güçlü repeat müşteriler aynı churn dinamiğine sahip olmayabilir.
+Her segment için churn rate ayrı hesaplanır. Bu kırılım purchaser depth ile retention behavior arasındaki ilişkiyi görmeye yarar.
 
 Örnek:
 
 ```text
-1 purchase   → %52 churn
-2 purchases  → %31 churn
-3–5          → %18 churn
-6+           → %9 churn
+1 purchase   → %52
+2 purchases  → %34
+3–5          → %19
+6+           → %10
 ```
 
-Bu sonuç, purchase frequency arttıkça müşteri ilişkisinin daha dayanıklı olabileceğini düşündürebilir.
-
-Ama bu korelasyon **nedensellik değildir**. “Daha çok purchase yaptırmak churn'ü otomatik olarak düşürür” sonucu bu analizden tek başına çıkarılamaz.
+Bu tablo lifecycle segmentation için güçlü bir diagnostic olabilir. Ancak sonuç descriptive'dir. Purchase frequency ile churn arasında association görmek causal effect kanıtlamaz.
 
 ---
 
-# 15. Threshold Sensitivity grafiği
+# 18. Threshold sensitivity
 
-Bu analiz en önemli kontrollerden biridir.
+Bu grafik churn metric'inin cutoff assumption'a ne kadar bağlı olduğunu gösterir.
 
-Örneğin seçilen threshold:
-
-```text
-90 gün
-```
-
-ise araç çevresindeki değerlerde churn rate'i tekrar hesaplar.
-
-Örnek:
+90 günlük threshold için örnek:
 
 ```text
 60 gün  → %36
@@ -640,43 +535,33 @@ ise araç çevresindeki değerlerde churn rate'i tekrar hesaplar.
 150 gün → %17
 ```
 
-## Nasıl yorumlanır?
+Threshold büyüdükçe churn classification daha konservatif hale gelir ve churn rate genellikle düşer.
 
-Threshold büyüdükçe churn olarak işaretlemek zorlaşır, bu nedenle churn rate genellikle düşer.
-
-Grafik şu soruyu cevaplar:
-
-> Sonuç seçtiğim threshold'a ne kadar hassas?
-
-Eğer:
+### Stable case
 
 ```text
-75 gün = %30
-90 gün = %29
+75 gün  = %30
+90 gün  = %29
 105 gün = %28
 ```
 
-ise sonuç görece stabil olabilir.
+Cutoff choice metric'i sınırlı etkiliyor.
 
-Ama:
+### Sensitive case
 
 ```text
-75 gün = %42
-90 gün = %29
+75 gün  = %42
+90 gün  = %29
 105 gün = %18
 ```
 
-ise küçük threshold değişiklikleri sonucu ciddi etkiliyor demektir.
-
-Bu durumda tek bir churn oranını kesin gerçek gibi sunmak doğru değildir.
+Metric cutoff assumption'a çok hassastır. Bu durumda churn rate'i tek bir kesin KPI gibi sunmak yerine sensitivity band ile raporlamak daha sağlıklıdır.
 
 ---
 
-# 16. Threshold Context / Gap Coverage
+# 19. Threshold context / gap coverage
 
-Churn ekranında seçilen threshold'un historical purchase-gap dağılımındaki karşılığı gösterilir.
-
-Örneğin:
+Selected cutoff historical repeat-purchase distribution üzerinde konumlandırılır.
 
 ```text
 Threshold = 90 gün
@@ -684,271 +569,201 @@ Gap coverage = %91
 P90 = 86 gün
 ```
 
-Bu, seçilen threshold'un historical repeat-purchase interval'larının yaklaşık %91'inden daha uzun/eşit olduğunu gösterir.
-
-Bu davranışsal bir sanity check'tir.
-
----
-
-# 17. Threshold nasıl seçilmeli?
-
-Bu basic tool threshold'u otomatik belirlemez. Bunun nedeni churn tanımının business bağlamına bağlı olmasıdır.
-
-Threshold belirlerken birlikte değerlendirilmesi gerekenler:
-
-1. Median purchase gap
-2. P75 / P90 / P95
-3. Purchase-gap histogram
-4. Cumulative coverage
-5. Threshold sensitivity
-6. Business purchase cycle
-7. Seasonality
-8. Ürün kategorisi
-9. Veri geçmişinin uzunluğu
-
-### Basit örnek yaklaşım
-
-Diyelim:
+Bu yapı şu business readout'u destekler:
 
 ```text
-Median = 28
-P75 = 48
-P90 = 83
-P95 = 125
+90 günlük inactivity window, observed repeat-purchase intervals'ın yaklaşık %91'ini kapsıyor ve historical P90'ın biraz üzerinde konumlanıyor.
 ```
 
-Olası testler:
+Bu behavioral sanity check'tir; optimum değer kanıtı değildir.
+
+---
+
+# 20. Threshold calibration yaklaşımı
+
+Threshold calibration sırasında birlikte değerlendirilmesi gerekenler:
+
+1. median purchase gap,
+2. P75 / P90 / P95,
+3. histogram shape,
+4. cumulative coverage,
+5. sensitivity curve,
+6. category replenishment cycle,
+7. seasonality,
+8. campaign / promotion cadence,
+9. CRM contact strategy,
+10. observation-window length.
+
+Örnek:
 
 ```text
-60
-90
-120
+Median = 29
+P75 = 51
+P90 = 87
+P95 = 128
 ```
 
-olabilir.
-
-Sonra sensitivity ve business anlamlılığı değerlendirilir.
-
-> Araç P90'ı otomatik threshold olarak kabul etmez ve kabul etmemelidir. P90 yalnızca aday eşik oluşturmak için referans olabilir.
+Test senaryoları 60 / 90 / 120 gün olabilir. Doğru cutoff yalnızca distribution'a değil business use case'e de bağlıdır.
 
 ---
 
-# 18. HTML Dashboard
+# 21. HTML dashboard
 
-`churn_analysis()` sonunda:
+`churn_analysis()` sonunda `ga4_churn_dashboard.html` oluşturulur.
+
+Dashboard şu readout'ları taşır:
+
+- selected inactivity threshold,
+- purchaser base,
+- active purchaser volume,
+- churned purchaser volume,
+- churn rate,
+- gap coverage,
+- churned historical revenue share,
+- status diagnostics,
+- churn by purchase frequency,
+- threshold sensitivity,
+- analyst notes.
+
+Dashboard operational sharing için uygundur; metric definitions notebook ile aynıdır.
+
+---
+
+# 22. Measurement caveats
+
+## `user_pseudo_id` customer ID değildir
+
+GA4 `user_pseudo_id` çoğunlukla device/browser scope'tadır. Aynı kişi mobile + desktop, farklı browser, cookie reset veya consent state değişimi nedeniyle birden fazla identifier üretebilir.
+
+Logged-in user stitching yapılmıyorsa sonuçlar customer-level değil, GA4 observed-user level'dır.
+
+## Purchase tracking quality
+
+Aşağıdaki implementation sorunları churn output'unu doğrudan bozar:
+
+- duplicate purchase,
+- missing purchase,
+- broken transaction_id,
+- revenue duplication,
+- currency mismatch,
+- late / partial tagging.
+
+Churn analysis öncesi ecommerce tracking QA yapılması önerilir.
+
+## Export start date bias
+
+BigQuery export'un başlangıç tarihi müşteri lifecycle başlangıcı değildir. Export yeni başladıysa `first_purchase_date`, `purchase_count` ve `repeat rate` historical lifecycle'ı eksik gösterebilir.
+
+## Observation-window bias
+
+Threshold 90 günse ancak son 30 günlük purchaser'lar için henüz 90 günlük outcome window tamamlanmamıştır. Bu kullanıcılar active görünür; bu gelecekte churn etmeyecekleri anlamına gelmez.
+
+## Classification ≠ prediction
+
+Bu framework şu soruya cevap verir:
 
 ```text
-ga4_churn_dashboard.html
+Selected inactivity rule'a göre hangi purchasers şu anda churned segmentinde?
 ```
 
-oluşturulur.
-
-Dashboard şu bölümleri içerir:
-
-- Selected threshold
-- Purchasers
-- Active purchasers
-- Churned users
-- Churn rate
-- Gap coverage
-- Churned historical revenue share
-- Analytical insights
-- Status diagnostics
-- Churn by purchase frequency
-- Threshold sensitivity
-
-Dashboard sonuçların paylaşılmasını kolaylaştırır; ancak dashboard içindeki sonuçların anlamı notebook çıktılarıyla aynıdır.
-
----
-
-# 19. Çok önemli metodolojik sınırlamalar
-
-## 19.1 `user_pseudo_id` kişi değildir
-
-GA4 `user_pseudo_id` genellikle browser/device instance seviyesindedir.
-
-Aynı gerçek kişi:
-
-- farklı cihazlarda,
-- farklı browser'larda,
-- cookie reset sonrası
-
-birden fazla `user_pseudo_id` oluşturabilir.
-
-Bu nedenle sonuçlar “gerçek müşteri” değil, kullanılan identity seviyesine göre yorumlanmalıdır.
-
----
-
-## 19.2 Tracking hataları analizi etkiler
-
-Duplicate `purchase` event'leri, eksik purchase event'leri veya yanlış revenue değerleri:
-
-- purchase count
-- revenue
-- purchase gap
-- churn classification
-
-sonuçlarını etkileyebilir.
-
----
-
-## 19.3 Dataset başlangıcı gerçek müşteri başlangıcı olmayabilir
-
-Bir kullanıcı dataset'in ilk gününde görünüyorsa bu onun gerçek ilk ziyareti veya ilk purchase'ı olmak zorunda değildir.
-
-Export daha sonra başlamış olabilir.
-
----
-
-## 19.4 Dataset'in son tarihi kritik önemdedir
-
-Analiz tarihi `MAX(event_date)` olduğu için dataset güncel değilse churn classification eski bir tarihe göre yapılır.
-
----
-
-## 19.5 Right censoring / observation-window etkisi
-
-Son purchase'ı analiz tarihine yakın olan kullanıcılar henüz churn olabilecek kadar gözlenmemiş olabilir.
-
-Örneğin threshold 90 gün ama kullanıcı son purchase'ı 20 gün önce yaptıysa “active” olarak görünür; bu kullanıcının gelecekte churn olup olmayacağını bu analiz söylemez.
-
----
-
-## 19.6 Churn classification prediction değildir
-
-Bu tool:
+Şu soruya cevap vermez:
 
 ```text
-kim churn olacak?
+Önümüzdeki 30 günde kim churn edecek?
 ```
 
-sorusunu tahmin etmez.
+Prediction için ayrı feature engineering, training window, outcome definition ve model validation gerekir.
 
-Şu soruyu cevaplar:
+## Seasonality
+
+Basic sürüm seasonality adjustment yapmaz. Travel, insurance, annual renewal, gifting, fashion seasonality ve durable goods gibi kategorilerde global threshold dikkatli kullanılmalıdır.
+
+---
+
+# 23. Reporting önerisi
+
+Tek bir churn rate yerine context ile birlikte raporlamak daha sağlıklıdır.
 
 ```text
-Seçilen inactivity threshold'a göre şu anda hangi historical purchaser'lar churned olarak sınıflanıyor?
+Inactivity threshold          90 days
+Purchaser churn rate          27%
+Observed gap P90              84 days
+Gap coverage @ 90d            91%
+Churn @ 75d                   31%
+Churn @ 105d                  24%
+One-time purchaser churn      43%
+6+ purchase churn             10%
+Churned historical rev. share 38%
 ```
 
+Bu format hem metric'i hem underlying assumption'ı görünür tutar.
+
 ---
 
-## 19.7 Causal inference yapılmaz
+# 24. Analyst checklist
 
-Örneğin 6+ purchase kullanıcılarında churn daha düşükse:
+- [ ] Source GCP project doğru mu?
+- [ ] GA4 dataset / property doğru mu?
+- [ ] `events_*` scope beklenen tarih aralığını kapsıyor mu?
+- [ ] Dataset fresh mi?
+- [ ] Purchase event QA tamam mı?
+- [ ] Revenue / currency mapping doğru mu?
+- [ ] Duplicate transaction riski kontrol edildi mi?
+- [ ] Purchaser base anlamlı büyüklükte mi?
+- [ ] Repeat purchaser observation yeterli mi?
+- [ ] P50 / P75 / P90 / P95 incelendi mi?
+- [ ] Histogram ve cumulative coverage okundu mu?
+- [ ] Threshold sensitivity kontrol edildi mi?
+- [ ] One-time vs repeat purchaser farkı değerlendirildi mi?
+- [ ] Historical revenue share future lost revenue olarak etiketlenmedi mi?
+- [ ] `user_pseudo_id` identity limitation dokümante edildi mi?
+
+---
+
+# 25. Terminology
+
+**Grain** — Bir satırın temsil ettiği analytical unit. `churn_base` için grain = 1 `user_pseudo_id`.
+
+**Purchaser base** — En az bir purchase event'i olan observed user seti.
+
+**Repeat purchaser** — Birden fazla purchase history'si olan purchaser.
+
+**Purchase cadence** — Purchaser'ların tekrar satın alma zamanlaması.
+
+**Purchase gap** — Ardışık distinct purchase dates arasındaki gün farkı.
+
+**Recency** — Son purchase'tan analysis date'e geçen süre.
+
+**Inactivity threshold / cutoff** — Purchaser'ın churned olarak sınıflandırılması için kullanılan recency sınırı.
+
+**P90** — Observed interval'ların yaklaşık %90'ının altında/eşit olduğu değer.
+
+**IQR** — P75 − P25; distribution'ın middle 50% spread'i.
+
+**Sensitivity analysis** — Cutoff değiştiğinde churn metric'inin ne kadar değiştiğini test etme yaklaşımı.
+
+**Metric scope** — Bir KPI'ın hangi population ve grain üzerinde hesaplandığını tanımlar.
+
+---
+
+## Özet
 
 ```text
-6 purchase yapmak churn'ü düşürür
-```
-
-sonucu çıkarılamaz.
-
-Bu descriptive relationship'tir.
-
----
-
-## 19.8 Seasonality dikkate alınmaz
-
-Basic sürümde:
-
-- aylık seasonality
-- yıllık purchase cycle
-- kampanya etkisi
-- ürün yenileme süresi
-
-model içinde ayrıca kontrol edilmez.
-
-Uzun purchase cycle olan sektörlerde threshold buna göre değerlendirilmelidir.
-
----
-
-# 20. Analiz sonucu nasıl sunulmalı?
-
-Tek bir churn rate paylaşmak yerine şu çerçeve daha sağlıklıdır:
-
-```text
-Selected threshold: 90 days
-Churn rate: 27%
-Observed purchase-gap P90: 84 days
-Gap coverage at 90 days: 91%
-75-day sensitivity: 31%
-105-day sensitivity: 24%
-One-time purchaser churn: 43%
-6+ purchase churn: 10%
-```
-
-Böylece kullanıcı hem sonucu hem de sonucun threshold seçimine bağlı olduğunu görür.
-
----
-
-# 21. Önerilen analyst checklist
-
-Analizi paylaşmadan önce kontrol edin:
-
-- [ ] Doğru GCP project seçildi mi?
-- [ ] Doğru GA4 dataset seçildi mi?
-- [ ] `table_id` doğru mu?
-- [ ] Dataset'in son event tarihi güncel mi?
-- [ ] Purchase tracking güvenilir mi?
-- [ ] Revenue implementasyonu doğru mu?
-- [ ] Purchase-gap dağılımında yeterli observation var mı?
-- [ ] Median / P75 / P90 / P95 kontrol edildi mi?
-- [ ] Threshold sensitivity incelendi mi?
-- [ ] One-time ve repeat purchaser farkı değerlendirildi mi?
-- [ ] Churned revenue share “future lost revenue” olarak yanlış sunulmadı mı?
-- [ ] `user_pseudo_id` identity sınırlaması belirtildi mi?
-
----
-
-# 22. Kavram sözlüğü
-
-**Grain**  
-Bir tablodaki bir satırın neyi temsil ettiğidir. `churn_base` için grain = 1 `user_pseudo_id`.
-
-**Purchaser**  
-En az bir `purchase` event'i olan kullanıcı.
-
-**Repeat purchaser**  
-Birden fazla purchase yapan kullanıcı.
-
-**Purchase gap**  
-Bir kullanıcının iki ardışık distinct purchase günü arasındaki gün sayısı.
-
-**Threshold**  
-Churn sınıflandırması için kullanılan maksimum kabul edilen inactivity süresi.
-
-**Churned purchaser**  
-Son purchase'ından bu yana geçen süre threshold'u aşan purchaser.
-
-**Percentile**  
-Dağılımdaki gözlemlerin belirli oranının altında/eşit kaldığı değer.
-
-**P90**  
-Gözlemlerin yaklaşık %90'ının altında/eşit olduğu değer.
-
-**IQR**  
-P75 − P25. Dağılımın orta %50'sinin yayılımı.
-
-**Sensitivity analysis**  
-Threshold değiştiğinde churn sonucunun ne kadar değiştiğini kontrol etme yöntemi.
-
----
-
-## Sonuç
-
-Bu toolkit'in temel yaklaşımı şudur:
-
-```text
-Önce purchase davranışını anla
+Validate query scope
         ↓
-Purchase-gap dağılımını incele
+Build purchaser-level base
         ↓
-Business olarak anlamlı threshold seç
+Profile repeat-purchase cadence
         ↓
-Churn classification çalıştır
+Select a business-relevant inactivity window
         ↓
-Threshold sensitivity ile sonucu test et
+Classify active vs churned purchasers
         ↓
-Frequency ve revenue diagnostics ile churn kitlesini yorumla
+Check threshold sensitivity
+        ↓
+Read frequency + revenue diagnostics
+        ↓
+Use outputs for lifecycle / CRM / retention analysis
 ```
 
-Churn rate tek başına nihai cevap değildir. Asıl değer, churn rate'in **hangi davranışsal dağılım ve hangi threshold varsayımı altında oluştuğunu** birlikte görebilmektir.
+Ana prensip: churn rate tek başına yeterli değildir. Metric'in hangi purchaser base, hangi observation window ve hangi inactivity cutoff altında oluştuğu her zaman görünür olmalıdır.
