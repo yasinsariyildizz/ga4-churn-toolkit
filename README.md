@@ -1,72 +1,86 @@
-# GA4 Churn Toolkit — Architecture Demo
+# GA4 Churn Toolkit
 
-This first release does **not** calculate churn. It validates the final architecture:
+A lightweight, open-source **purchase-based churn analysis toolkit for GA4 BigQuery export data**.
 
-**GitHub / PyPI package → BigQuery Notebook → Python orchestration → packaged SQL → BigQuery output tables → notebook results**
+The toolkit is designed for BigQuery / Colab Enterprise notebooks. Users provide only five inputs, then run four functions in order.
 
-The demo calculates only:
+## Inputs
 
-- Users (`COUNT(DISTINCT user_pseudo_id)`)
-- Sessions (`user_pseudo_id + ga_session_id`)
-- Purchase events
-- Purchase revenue (`ecommerce.purchase_revenue`)
-- Event count
-
-## Why this structure?
-
-The Python engine is intentionally generic. It discovers ordered `.sql` files from the package and executes them as steps. Each SQL file contains lightweight metadata headers:
-
-```sql
--- name: Step Name
--- output_table: output_table_name
--- result: false
+```python
+analysis = ChurnAnalysis(
+    project_id="your-gcp-project",
+    dataset_id="analytics_123456789",
+    table_id="events_*",
+    output_dataset_id="ga4_churn",
+    churn_threshold=90,
+)
 ```
 
-When the real churn analysis is ready, the package/notebook architecture can remain the same. Replace the SQL step files with churn SQL.
+- `project_id`: GCP project containing the GA4 export
+- `dataset_id`: GA4 BigQuery export dataset
+- `table_id`: GA4 event table or wildcard, e.g. `events_*`
+- `output_dataset_id`: dataset where analysis tables will be created
+- `churn_threshold`: inactivity threshold in days after the last purchase
 
-## Install during GitHub testing
+## Install
 
 ```python
 %pip install -q --upgrade "ga4-churn-toolkit @ git+https://github.com/yasinsariyildizz/ga4-churn-toolkit.git@main"
 ```
 
-After the GitHub test is stable, create a release tag and pin that version. After publishing to PyPI:
+Then:
 
 ```python
-%pip install -q "ga4-churn-toolkit==0.0.1"
+from ga4_churn import ChurnAnalysis
 ```
 
-## Usage
+## Notebook workflow
 
 ```python
-from ga4_churn import GA4Analysis
-
-analysis = GA4Analysis(
-    project_id="your-gcp-project",
-    dataset_id="analytics_123456789",
-    output_dataset="ga4_analysis_demo",
-    start_date="2026-08-01",
-    end_date="2026-08-31",
-)
-
-analysis.validate()
 analysis.dry_run()
-analysis.run_all()
+analysis.base_table()
+analysis.purchase_day_distribution()
+analysis.churn_analysis()
 ```
 
-Or run steps separately:
+### `dry_run()`
+Estimates BigQuery scan volume before creating output tables.
 
-```python
-analysis.run_step(1)
-analysis.run_step(2)
-analysis.run_step(3)
-analysis.run_step(4)
+### `base_table()`
+Creates one row per `user_pseudo_id` with:
+- event count
+- session count
+- purchase count
+- revenue
+- first / last purchase date
+- days since last purchase
+
+### `purchase_day_distribution()`
+Calculates days between consecutive distinct purchase dates for repeat purchasers and displays mean, standard deviation, P25, median, P75, P90, P95 and a histogram.
+
+### `churn_analysis()`
+Basic definition:
+
+> A purchaser is churned when `days_since_last_purchase > churn_threshold`.
+
+Users with no purchase are labelled `never_purchased` and excluded from the churn-rate denominator.
+
+The function also creates a standalone `ga4_churn_dashboard.html` file in the notebook runtime.
+
+## Output tables
+
+```text
+churn_base
+purchase_day_gaps
+churn_users
 ```
 
-## Required permissions
+The source GA4 tables are never modified.
 
-The notebook identity needs permission to:
+## Important note
 
-- Read the GA4 export dataset/tables
-- Create/update tables in the output dataset
-- Run BigQuery jobs in the billing project
+If `table_id="events_*"`, this basic version scans all matching historical GA4 export tables. Run `dry_run()` first to inspect the expected scan volume.
+
+## License
+
+MIT
