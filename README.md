@@ -2,7 +2,7 @@
 
 A lightweight, open-source **purchase-based churn analysis toolkit for GA4 BigQuery export data**.
 
-The toolkit is designed for BigQuery / Colab Enterprise notebooks. Users provide only five inputs, then run four functions in order.
+The toolkit is designed for BigQuery / Colab Enterprise notebooks. Users provide four source/output inputs, then choose the churn threshold only when running churn analysis.
 
 ## Inputs
 
@@ -12,7 +12,6 @@ analysis = ChurnAnalysis(
     dataset_id="analytics_123456789",
     table_id="events_*",
     output_dataset_id="ga4_churn",
-    churn_threshold=90,
 )
 ```
 
@@ -20,7 +19,6 @@ analysis = ChurnAnalysis(
 - `dataset_id`: GA4 BigQuery export dataset
 - `table_id`: GA4 event table or wildcard, e.g. `events_*`
 - `output_dataset_id`: dataset where analysis tables will be created
-- `churn_threshold`: inactivity threshold in days after the last purchase
 
 ## Install
 
@@ -38,15 +36,15 @@ from ga4_churn import ChurnAnalysis
 
 ```python
 analysis.dry_run()
-analysis.base_table()
+analysis.create_base_table()
 analysis.purchase_day_distribution()
-analysis.churn_analysis()
+analysis.churn_analysis(90)
 ```
 
 ### `dry_run()`
 Estimates BigQuery scan volume before creating output tables.
 
-### `base_table()`
+### `create_base_table()`
 Creates one row per `user_pseudo_id` with:
 - event count
 - session count
@@ -56,16 +54,40 @@ Creates one row per `user_pseudo_id` with:
 - days since last purchase
 
 ### `purchase_day_distribution()`
-Calculates days between consecutive distinct purchase dates for repeat purchasers and displays mean, standard deviation, P25, median, P75, P90, P95 and a histogram.
+Calculates days between consecutive distinct purchase dates for repeat purchasers and returns a richer statistical profile including:
+- min / max
+- mean / median
+- standard deviation
+- P10 / P25 / P50 / P75 / P90 / P95
+- IQR
+- coefficient of variation
+- repeat-purchase coverage within 30 / 60 / 90 days
+- histogram
+- cumulative distribution by threshold day
+- rule-based analytical insights about skewness and purchase-cycle variability
 
-### `churn_analysis()`
+### `churn_analysis(churn_threshold)`
+The churn threshold is supplied only at analysis time:
+
+```python
+analysis.churn_analysis(90)
+```
+
 Basic definition:
 
 > A purchaser is churned when `days_since_last_purchase > churn_threshold`.
 
 Users with no purchase are labelled `never_purchased` and excluded from the churn-rate denominator.
 
-The function also creates a standalone `ga4_churn_dashboard.html` file in the notebook runtime.
+The function adds:
+- active vs churned purchaser KPIs
+- churned historical revenue share
+- status diagnostics with average / median purchase and revenue values
+- churn rate by purchase frequency (`1`, `2`, `3-5`, `6+` purchases)
+- threshold sensitivity around the selected cutoff
+- selected threshold position versus observed purchase-gap distribution
+- analytical insight text
+- standalone `ga4_churn_dashboard.html`
 
 ## Output tables
 
