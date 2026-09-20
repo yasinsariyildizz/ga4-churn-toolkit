@@ -1,19 +1,33 @@
 # GA4 Churn Toolkit
 
-A lightweight, open-source **purchase-based churn analysis toolkit for GA4 BigQuery export data**.
+Open-source, BigQuery-first churn analysis for GA4 ecommerce export data.
 
-The toolkit is designed for BigQuery / Colab Enterprise notebooks. Users provide four source/output inputs, then choose the churn threshold only when running churn analysis.
+The toolkit is built for digital analytics teams that want a lightweight way to move from raw GA4 event export to a purchaser-level churn view without rebuilding the same SQL for every property.
 
-## Analysis & interpretation guides
+It focuses on four things:
 
-Before using the outputs in reporting or decision-making, read the detailed methodology and interpretation guides:
+- creating a reusable purchaser-level analytical base,
+- understanding repeat-purchase cadence before defining churn,
+- classifying churn with an explicit inactivity cutoff,
+- checking how sensitive the result is to that cutoff.
+
+## Documentation
 
 - [Türkçe analiz ve yorumlama rehberi](docs/ANALYSIS_GUIDE_TR.md)
-- [English analysis & interpretation guide](docs/ANALYSIS_GUIDE_EN.md)
+- [English analysis and interpretation guide](docs/ANALYSIS_GUIDE_EN.md)
 
-These guides explain the churn logic, purchase-gap statistics, percentile interpretation, charts, threshold sensitivity, automatic insights, methodological limitations, and common interpretation mistakes.
+## Install
 
-## Inputs
+```python
+%pip install -q --upgrade \
+"ga4-churn-toolkit @ git+https://github.com/yasinsariyildizz/ga4-churn-toolkit.git@main"
+```
+
+```python
+from ga4_churn import ChurnAnalysis
+```
+
+## Setup
 
 ```python
 analysis = ChurnAnalysis(
@@ -24,24 +38,9 @@ analysis = ChurnAnalysis(
 )
 ```
 
-- `project_id`: GCP project containing the GA4 export
-- `dataset_id`: GA4 BigQuery export dataset
-- `table_id`: GA4 event table or wildcard, e.g. `events_*`
-- `output_dataset_id`: dataset where analysis tables will be created
+Inputs are intentionally limited to the source and output objects. The churn cutoff is selected later, after reviewing actual repeat-purchase behavior.
 
-## Install
-
-```python
-%pip install -q --upgrade "ga4-churn-toolkit @ git+https://github.com/yasinsariyildizz/ga4-churn-toolkit.git@main"
-```
-
-Then:
-
-```python
-from ga4_churn import ChurnAnalysis
-```
-
-## Notebook workflow
+## Workflow
 
 ```python
 analysis.dry_run()
@@ -51,52 +50,61 @@ analysis.churn_analysis(90)
 ```
 
 ### `dry_run()`
-Estimates BigQuery scan volume before creating output tables.
+Checks expected BigQuery scan volume before running the workflow.
 
 ### `create_base_table()`
-Creates one row per `user_pseudo_id` with:
-- event count
-- session count
-- purchase count
-- revenue
-- first / last purchase date
-- days since last purchase
+Builds a one-row-per-`user_pseudo_id` analytical base with:
+
+- event and session volume,
+- purchase count,
+- historical revenue,
+- first / last observed purchase date,
+- days since last purchase,
+- purchaser / repeat-purchaser diagnostics.
 
 ### `purchase_day_distribution()`
-Calculates days between consecutive distinct purchase dates for repeat purchasers and returns a richer statistical profile including:
-- min / max
-- mean / median
-- standard deviation
-- P10 / P25 / P50 / P75 / P90 / P95
-- IQR
-- coefficient of variation
-- repeat-purchase coverage within 30 / 60 / 90 days
-- histogram
-- cumulative distribution by threshold day
-- rule-based analytical insights about skewness and purchase-cycle variability
+Profiles repeat-purchase cadence using consecutive distinct purchase dates.
+
+Outputs include:
+
+- mean / median purchase gap,
+- P10 / P25 / P50 / P75 / P90 / P95,
+- standard deviation and IQR,
+- coefficient of variation,
+- 30 / 60 / 90-day repeat-purchase coverage,
+- purchase-gap histogram,
+- cumulative repeat-purchase coverage,
+- behavioral readout for threshold selection.
 
 ### `churn_analysis(churn_threshold)`
-The churn threshold is supplied only at analysis time:
 
 ```python
 analysis.churn_analysis(90)
 ```
 
-Basic definition:
+Basic purchaser-level rule:
 
-> A purchaser is churned when `days_since_last_purchase > churn_threshold`.
+```text
+purchase_count = 0
+→ never_purchased
 
-Users with no purchase are labelled `never_purchased` and excluded from the churn-rate denominator.
+purchase_count > 0 and days_since_last_purchase <= threshold
+→ active_purchaser
 
-The function adds:
-- active vs churned purchaser KPIs
-- churned historical revenue share
-- status diagnostics with average / median purchase and revenue values
-- churn rate by purchase frequency (`1`, `2`, `3-5`, `6+` purchases)
-- threshold sensitivity around the selected cutoff
-- selected threshold position versus observed purchase-gap distribution
-- analytical insight text
-- standalone `ga4_churn_dashboard.html`
+purchase_count > 0 and days_since_last_purchase > threshold
+→ churned
+```
+
+The churn output includes:
+
+- purchaser / active / churned base sizes,
+- churn rate,
+- one-time vs repeat purchaser diagnostics,
+- active vs churned purchase and revenue profiles,
+- churn rate by purchase-frequency band,
+- threshold sensitivity,
+- selected cutoff vs historical purchase-gap distribution,
+- standalone HTML dashboard.
 
 ## Output tables
 
@@ -106,11 +114,26 @@ purchase_day_gaps
 churn_users
 ```
 
-The source GA4 tables are never modified.
+The GA4 source tables are read-only. Analysis outputs are written to the selected output dataset.
 
-## Important note
+## Metric scope
 
-If `table_id="events_*"`, this basic version scans all matching historical GA4 export tables. Run `dry_run()` first to inspect the expected scan volume.
+This is a descriptive purchaser-lifecycle analysis, not a churn prediction model.
+
+A purchaser is classified using observed GA4 purchase history and the selected inactivity window. The framework does not claim that the chosen cutoff is universally correct; it exposes purchase cadence and sensitivity metrics so the cutoff can be defended with both behavioral evidence and business context.
+
+## GA4 measurement notes
+
+Results depend on the quality of the underlying implementation. Before using the output for CRM, retention or lifecycle decisions, validate:
+
+- `purchase` event quality,
+- duplicate transaction handling,
+- revenue and currency implementation,
+- GA4 export completeness,
+- identity scope (`user_pseudo_id` vs logged-in customer identity),
+- data freshness and observation window.
+
+If `table_id="events_*"`, the current basic version can scan all matching historical export tables. Run `dry_run()` before a full-history execution.
 
 ## License
 
