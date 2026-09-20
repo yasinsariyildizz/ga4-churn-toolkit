@@ -1,55 +1,70 @@
-# GA4 Churn Toolkit — Analysis & Interpretation Guide (EN)
+# GA4 Churn Toolkit — Analysis & Interpretation Guide
 
-This document explains how the **basic purchase-based churn** analysis in `ga4-churn-toolkit` works, what each metric and chart means, and how analysts should interpret the outputs.
+This guide documents the methodology behind the purchase-based churn workflow in `ga4-churn-toolkit` and how to read the outputs. It is written for digital analytics, marketing analytics, CRM analytics, lifecycle and BI teams working with GA4 BigQuery export data.
 
-> This release is intentionally simple. Its purpose is to provide a transparent and reusable churn framework on top of GA4 BigQuery export data. It does **not predict future churn**. It classifies current historical purchasers according to a user-selected inactivity threshold.
+This is not a predictive churn model. It does not score the probability that a user will churn in the future. It builds a purchaser-level behavioral view from historical GA4 purchase data and classifies users against a selected inactivity window.
 
 ---
 
-## 1. Core analytical logic
+## 1. Analytical framework
 
-The analysis is based on purchase behavior.
+The core logic is purchaser-level recency.
 
-A user is considered a **purchaser** if they generated at least one `purchase` event. The tool calculates the number of days between the user's last purchase and the analysis date:
+A `user_pseudo_id` enters the purchaser base once at least one `purchase` event is observed. For each purchaser, the workflow calculates the number of days between the last observed purchase and the analysis date:
 
 ```text
 days_since_last_purchase = analysis_date - last_purchase_date
 ```
 
-The churn threshold is provided only when churn analysis is executed:
+The inactivity cutoff is passed only when churn classification is run:
 
 ```python
 analysis.churn_analysis(90)
 ```
 
-In this example, the threshold is 90 days.
-
-Classification logic:
+For a 90-day cutoff:
 
 ```text
 purchase_count = 0
 → never_purchased
 
-purchase_count > 0 and days_since_last_purchase <= threshold
+purchase_count > 0
+and days_since_last_purchase <= 90
 → active_purchaser
 
-purchase_count > 0 and days_since_last_purchase > threshold
+purchase_count > 0
+and days_since_last_purchase > 90
 → churned
 ```
 
-### What is the analysis date?
+This is a behavioral inactivity rule. It is not the same as a subscription cancellation flag, CRM lifecycle status, or a confirmed customer-loss record.
 
-The user does not enter a separate analysis date. The toolkit uses the most recent `event_date` found in the source data:
+---
+
+## 2. Metric scope and analysis date
+
+The analysis date is derived from the source data:
 
 ```text
 analysis_date = MAX(event_date)
 ```
 
-Therefore, churn results depend on how fresh the dataset is. If the source data is stale, churn is evaluated relative to that stale date.
+This keeps the setup lightweight, but data freshness becomes part of the metric definition.
+
+Example:
+
+```text
+Today: September 20
+Latest event_date in BigQuery: August 31
+```
+
+The churn classification is evaluated as of August 31, not September 20.
+
+Always review `analysis_date` before sharing the result.
 
 ---
 
-## 2. User inputs
+## 3. Input model
 
 ```python
 analysis = ChurnAnalysis(
@@ -60,18 +75,18 @@ analysis = ChurnAnalysis(
 )
 ```
 
-| Input | Meaning |
+| Input | Use |
 |---|---|
-| `project_id` | GCP project that contains the GA4 export |
+| `project_id` | GCP project containing the GA4 export |
 | `dataset_id` | GA4 BigQuery export dataset |
-| `table_id` | Source table or wildcard, e.g. `events_*` |
-| `output_dataset_id` | Dataset where analysis tables will be created |
+| `table_id` | Source table or wildcard such as `events_*` |
+| `output_dataset_id` | Dataset where analytical outputs are written |
 
-The churn threshold is deliberately excluded from the constructor and is entered only in `churn_analysis()`.
+The churn cutoff is deliberately excluded from initialization so repeat-purchase behavior can be reviewed before selecting an inactivity window.
 
 ---
 
-# 3. Recommended workflow
+# 4. Recommended workflow
 
 ```python
 analysis.dry_run()
@@ -80,17 +95,24 @@ analysis.purchase_day_distribution()
 analysis.churn_analysis(90)
 ```
 
-This order matters because each step helps interpret the next one.
+The workflow answers four practical questions:
+
+```text
+1. How much data will the queries scan?
+2. What does the purchaser base look like?
+3. What is the natural repeat-purchase cadence?
+4. How does churn look under the selected inactivity cutoff?
+```
 
 ---
 
-# 4. `dry_run()` — Cost and scan validation
+# 5. `dry_run()` — Query cost check
 
 ```python
 analysis.dry_run()
 ```
 
-This function estimates the amount of data BigQuery would scan before creating any output table.
+This estimates BigQuery scan volume before the analytical queries are executed.
 
 Main output:
 
@@ -98,117 +120,106 @@ Main output:
 Estimated scan: X GB
 ```
 
-## How to interpret it
+This is not a business metric. It is a query-footprint and cost-control check.
 
-This is not an analytical result. It only describes the approximate data volume that BigQuery will read.
+If `table_id="events_*"`, the query may scan all matching historical export tables.
 
-If:
+Review the estimate when:
 
-```python
-table_id="events_*"
-```
+- the expected scan is much larger than anticipated,
+- the wrong GA4 property or dataset may have been selected,
+- a full-history scan is unnecessary,
+- production-scale data is being used for a quick validation run.
 
-is used, all matching export tables may be scanned. On large GA4 datasets this can create substantial query cost.
-
-### Pay attention when
-
-- estimated GB/TB is much larger than expected,
-- the wrong dataset or wildcard may have been selected,
-- a full-history scan is unnecessary for testing.
-
-`dry_run()` is a **cost and safety control**, not a business-analysis step.
+This is particularly useful in agency and multi-client environments where BigQuery cost governance matters.
 
 ---
 
-# 5. `create_base_table()` — User-level analytical base
+# 6. `create_base_table()` — Purchaser-level analytical base
 
 ```python
 analysis.create_base_table()
 ```
 
-The grain of this table is:
+Output grain:
 
 ```text
 1 row = 1 user_pseudo_id
 ```
 
-Main output table:
+Output table:
 
 ```text
 <output_dataset>.churn_base
 ```
 
-## Core columns
+This table is the user-level feature layer for the churn workflow.
 
-| Column | Meaning |
+## Core fields
+
+| Field | Definition |
 |---|---|
-| `user_pseudo_id` | GA4 browser/device-level user identifier |
-| `first_event_date` | First event date observed in the dataset |
-| `last_event_date` | Last event date observed in the dataset |
-| `event_count` | Total event count for the user |
+| `user_pseudo_id` | GA4 device/browser-scoped user identifier |
+| `first_event_date` | First event date observed in the export |
+| `last_event_date` | Last event date observed in the export |
+| `event_count` | Total observed event volume |
 | `session_count` | Distinct `ga_session_id` count |
-| `purchase_count` | Number of `purchase` events |
-| `revenue` | Sum of `ecommerce.purchase_revenue` on purchase events |
+| `purchase_count` | Number of purchase events |
+| `revenue` | Sum of `ecommerce.purchase_revenue` |
 | `first_purchase_date` | First observed purchase date |
 | `last_purchase_date` | Last observed purchase date |
-| `analysis_date` | Maximum event date in the source data |
-| `days_since_last_purchase` | Days from last purchase to analysis date |
+| `analysis_date` | Maximum `event_date` in the source |
+| `days_since_last_purchase` | Purchase recency |
 
-## Notebook KPIs
+## Users
 
-### Users
+Distinct `user_pseudo_id` count. This should not be interpreted as an exact customer count because GA4 identity is generally device/browser scoped.
 
-Distinct `user_pseudo_id` count in the source data.
+## Purchasers
 
-### Purchasers
+Users with at least one observed purchase. This is the base population for purchaser churn.
 
-Users with at least one purchase event.
+## One-time purchasers
 
-### One-time purchasers
+Users with exactly one observed purchase. From a lifecycle perspective, this is the purchaser segment that has not yet demonstrated repeat behavior.
 
-Users with exactly one purchase event.
+## Repeat purchasers
 
-This group is especially important because one-time buyers often behave very differently from repeat purchasers.
+Users with more than one observed purchase. This population drives repeat-purchase cadence analysis.
 
-### Repeat purchasers
-
-Users with more than one purchase event.
-
-### Purchaser rate
+## Purchaser rate
 
 ```text
-purchasers / all users
+purchasers / observed users
 ```
 
-This is **not** a churn rate. It is simply the share of observed users who became purchasers.
+This is not a session conversion rate. It is a user-level observed purchaser share.
 
-### Repeat rate
+## Repeat rate
 
 ```text
 repeat purchasers / purchasers
 ```
 
-This describes how much of the purchaser base has demonstrated repeat buying behavior.
+This summarizes how much of the purchaser base has demonstrated repeat buying behavior.
 
-### Revenue
+## Revenue
 
-Historical revenue observed on purchase events in the dataset.
+Historical revenue observed on GA4 purchase events.
 
-> This is not necessarily accounting revenue. GA4 tracking quality, currency implementation, and duplicate purchase events can affect the number.
+Measurement quality matters. Duplicate purchases, transaction deduplication issues, currency mapping, missing revenue and consent or tagging gaps can all affect this number. GA4 revenue should not automatically be expected to reconcile one-to-one with finance or ERP revenue.
 
 ---
 
-# 6. `purchase_day_distribution()` — Repurchase timing analysis
+# 7. `purchase_day_distribution()` — Repeat-purchase cadence
 
 ```python
 analysis.purchase_day_distribution()
 ```
 
-This step is designed to help understand the customer's natural purchase rhythm before selecting a churn threshold.
+This step profiles repurchase timing before the inactivity cutoff is selected.
 
-## Calculation logic
-
-Distinct purchase dates are sorted for each user.
+Distinct purchase dates are ordered per user and consecutive day gaps are calculated.
 
 Example:
 
@@ -218,153 +229,106 @@ January 25
 February 20
 ```
 
-Generated gaps:
+produces:
 
 ```text
 15 days
 26 days
 ```
 
-If a user makes multiple purchases on the same day, that day is counted only once for interval analysis. This prevents same-day purchases from creating misleading zero-day repeat intervals.
+Multiple purchases on the same day count as one purchase date for interval analysis. This keeps order frequency separate from day-gap distribution.
 
-> Only users with at least two distinct purchase dates contribute to the purchase-gap distribution. One-time purchasers are not included in this distribution.
+One-time purchasers do not contribute because they have no repeat interval.
 
 ---
 
-## 6.1 Gap Observations
+# 8. Distribution metrics
 
-Total number of consecutive purchase intervals observed.
+## Gap observations
 
-If one user purchases on five distinct dates, they contribute four gap observations.
+Total number of consecutive purchase intervals.
 
-Therefore:
+A user with five distinct purchase dates contributes four observations. Therefore:
 
 ```text
-gap observations != repeat purchaser count
+gap observations != repeat purchasers
 ```
 
 is expected.
 
----
+## Mean gap
 
-## 6.2 Mean Gap
+Average repeat-purchase interval. It is sensitive to long-tail behavior and should not be used alone as a churn cutoff.
 
-The arithmetic mean of observed purchase intervals.
+## Median / P50
 
-It is sensitive to very long gaps.
-
-Example:
+A more robust center point for repeat-purchase cadence.
 
 ```text
-10, 12, 14, 15, 180
+Median = 32 days
 ```
 
-The 180-day interval materially increases the mean.
+means roughly half of observed intervals are 32 days or shorter.
 
-For that reason, the mean should not be used alone to select a churn threshold.
+## P25 / P75
 
----
-
-## 6.3 Median / P50
-
-The midpoint of the purchase-gap distribution.
-
-If:
-
-```text
-Median = 30 days
-```
-
-then approximately half of observed intervals are 30 days or shorter and half are longer.
-
-The median is less sensitive to extreme values than the mean.
-
----
-
-## 6.4 P25 and P75
-
-P25 is the value at or below which about 25% of intervals fall. P75 is the equivalent point for about 75% of intervals.
-
-Example:
+These define the middle 50% of observed repeat-purchase intervals.
 
 ```text
 P25 = 18
-P75 = 55
+P75 = 56
 ```
 
-The middle 50% of observed repeat-purchase intervals are approximately between 18 and 55 days.
+suggests the core cadence is concentrated around an 18–56 day window.
 
----
-
-## 6.5 IQR
+## IQR
 
 ```text
 IQR = P75 - P25
 ```
 
-IQR describes the spread of the middle 50% of the distribution.
+A narrow IQR suggests a relatively consistent purchase cadence. A wide IQR suggests a more heterogeneous purchaser base, where one global churn cutoff may fit some segments better than others.
 
-Low IQR → repeat-purchase timing is relatively concentrated.
+## P90 / P95
 
-High IQR → customer behavior is heterogeneous and one churn threshold may not fit all users equally well.
-
----
-
-## 6.6 P90 and P95
-
-These are especially useful reference points when evaluating churn thresholds.
-
-Example:
+Useful upper-tail references for threshold calibration.
 
 ```text
-P90 = 82 days
+P90 = 84 days
+P95 = 126 days
 ```
 
-This means that approximately 90% of observed repeat-purchase intervals are 82 days or shorter.
+A 90-day cutoff would sit near the upper end of historical repeat-purchase behavior.
 
-If a 90-day churn threshold is selected, the cutoff may sit near the upper tail of historical repeat behavior.
+P90 or P95 should not be treated as an automatic churn threshold. They are behavioral baselines that still need to be combined with category cycle, replenishment period, seasonality and CRM strategy.
 
-However:
+## Standard deviation
 
-> P90 is **not automatically the correct churn threshold**.
+Measures purchase-gap volatility. A high value can indicate substantial variation in repurchase cadence across the purchaser base.
 
-It is a behavioral reference point only. Seasonality, product renewal cycles, subscriptions, category-specific purchase patterns, and the observation window can all change how it should be interpreted.
-
----
-
-## 6.7 Standard Deviation
-
-Measures variability around the mean purchase interval.
-
-A high standard deviation suggests that purchase timing differs substantially across observed intervals.
-
----
-
-## 6.8 Coefficient of Variation (CV)
+## Coefficient of Variation
 
 ```text
 CV = standard deviation / mean
 ```
 
-It provides a relative measure of dispersion.
+A scale-independent dispersion measure.
 
-A rough interpretation aid:
+Practical diagnostic:
 
 ```text
-CV < 0.5   → relatively concentrated timing
+CV < 0.5   → relatively concentrated cadence
 0.5–1.0    → moderate variability
 CV >= 1.0  → high variability
 ```
 
-These are not universal statistical rules; they are only practical interpretation heuristics.
-
-When CV is high, a single universal churn threshold should be used more cautiously.
+These are directional diagnostics, not hard statistical rules.
 
 ---
 
-# 7. How to read the Purchase-Gap Histogram
+# 9. Purchase-gap histogram
 
-The histogram groups purchase intervals into buckets:
+Buckets:
 
 ```text
 0–7
@@ -377,95 +341,72 @@ The histogram groups purchase intervals into buckets:
 366+
 ```
 
-Each bar shows how many observed purchase intervals fall into that range.
+Each bar represents observed interval volume within that range.
 
-## Example interpretation
+If most observations sit in the 15–30 and 31–60 day buckets, a large part of the purchaser base may be cycling back within roughly two months.
 
-If the largest bar is:
+If the 181+ buckets are material, investigate:
 
-```text
-15–30 days
-```
-
-then a large share of repeat purchasing occurs in that interval range.
-
-If the 181+ buckets are also substantial, possible explanations include:
-
-- long purchase cycles,
-- heterogeneous customer segments,
+- long replenishment cycles,
 - seasonality,
-- long-tailed behavior caused by a long observation window.
+- category mix,
+- high-value / low-frequency segments,
+- long observation windows.
 
-### What should not be concluded from the histogram?
-
-Do not automatically conclude:
-
-> “The largest bar is 31–60 days, therefore the churn threshold must be 60 days.”
-
-The histogram describes the shape of historical behavior. It does not make the business decision for you.
+The histogram shows distribution shape. It should not be used as a standalone cutoff rule.
 
 ---
 
-# 8. Cumulative Repeat-Purchase Coverage chart
+# 10. Cumulative repeat-purchase coverage
 
 This chart answers:
 
-> What percentage of observed repeat-purchase intervals occur within X days?
+```text
+What share of observed purchase intervals happened within X days?
+```
 
 Example:
 
 ```text
-30 days → 48%
-60 days → 72%
-90 days → 89%
+30 days  → 46%
+60 days  → 73%
+90 days  → 89%
 180 days → 97%
 ```
 
-Interpretation:
+If the 90-day coverage is 89%, approximately 89% of historical repeat-purchase intervals were 90 days or shorter.
 
-- 48% of observed intervals happen within 30 days,
-- 72% within 60 days,
-- 89% within 90 days.
-
-This chart is often more directly useful for threshold discussions than the histogram.
-
-If a 90-day threshold has 89% coverage, then the selected threshold is at least as long as approximately 89% of historical observed purchase intervals.
-
-This does **not** mean “89% of users return within 90 days.” The metric is interval-based, not user-based.
+This does not mean 89% of users return within 90 days. The metric scope is interval-level, not user-level.
 
 ---
 
-# 9. Automatic Purchase Behavior Insights
+# 11. Purchase behavior readout
 
-The toolkit generates deterministic summary statements from the observed statistics.
-
-Examples:
-
-```text
-The median repeat-purchase interval is 31 days.
-The middle 50% of repeat-purchase intervals fall between 18 and 55 days.
-The distribution is right-skewed.
-Repurchase timing is highly variable.
-```
-
-These statements are not AI predictions. They are rule-based summaries designed to help analysts interpret the numbers quickly.
-
----
-
-# 10. `churn_analysis(threshold)`
+The notebook surfaces short analyst notes from the distribution output.
 
 Example:
+
+```text
+Median repeat-purchase interval: 31 days
+Middle 50% range: 18–55 days
+Distribution: right-skewed
+Cadence variability: high
+```
+
+These notes are intended to make the output easier to scan. The inactivity cutoff remains an analyst / business decision.
+
+---
+
+# 12. `churn_analysis(threshold)` — Purchaser inactivity classification
 
 ```python
 analysis.churn_analysis(90)
 ```
 
-This step classifies purchasers using the selected inactivity threshold.
-
-## Churn-rate formula
+Churn rate:
 
 ```text
-churn rate = churned purchasers / all purchasers
+churned purchasers / all purchasers
 ```
 
 Never-purchased users are excluded from the denominator.
@@ -473,117 +414,97 @@ Never-purchased users are excluded from the denominator.
 Example:
 
 ```text
-Total users        1,000,000
-Purchasers           200,000
-Churned               60,000
+Observed users      1,000,000
+Purchasers            200,000
+Churned                60,000
 
-Churn Rate = 60,000 / 200,000 = 30%
+Churn rate = 60,000 / 200,000 = 30%
 ```
 
-Incorrect denominator:
-
-```text
-60,000 / 1,000,000
-```
-
-because users who never purchased were never part of the purchaser-risk population.
+Using 60,000 / 1,000,000 would dilute the purchaser-churn metric with users who were never in the purchaser lifecycle.
 
 ---
 
-# 11. Churn Analysis KPIs
+# 13. Churn KPIs
 
-## Purchasers
+## Active purchasers
 
-All users with at least one purchase.
+Purchasers whose last purchase falls within the selected inactivity window.
 
-## Active Purchasers
+## Churned purchasers
 
-Purchasers whose last purchase falls within the selected threshold.
+Purchasers whose purchase recency exceeds the selected cutoff.
 
-## Churned Users
+## One-time purchasers
 
-Purchasers whose inactivity exceeds the selected threshold.
+Purchasers who have not demonstrated repeat buying behavior after acquisition.
 
-## One-Time Purchasers
+## Churned one-time buyers
 
-Purchasers with exactly one purchase event.
+Users with one purchase whose recency exceeds the cutoff.
 
-This segment often has a very different churn profile from repeat buyers.
+## Churned repeat buyers
 
-## Churned One-Time Buyers
+Users with prior repeat behavior whose recency now exceeds the cutoff.
 
-Users with one purchase whose inactivity exceeds the threshold.
-
-## Churned Repeat Buyers
-
-Users with multiple purchases whose inactivity exceeds the threshold.
-
-## Churned Revenue Share
-
-```text
-historical revenue of churned users
------------------------------------
-historical revenue of all purchasers
-```
-
-This metric does **not** mean:
-
-> “This is the revenue we lost.”
-
-It shows the historical revenue share generated by users who are currently classified as churned. It is not a forecast of future lost revenue.
+This split is useful for CRM activation because one-time lapse and established-repeat lapse are not necessarily the same lifecycle problem.
 
 ---
 
-# 12. Status Diagnostics table
+# 14. Churned historical revenue share
 
-This table compares:
+```text
+historical revenue from churned purchasers
+-----------------------------------------
+historical revenue from all purchasers
+```
 
-- active purchasers,
-- churned purchasers,
-- never-purchased users.
-
-Columns include:
-
-- Users
-- Avg purchases
-- Median purchases
-- Avg revenue
-- Median revenue
-- Avg inactive days
-
-## Why show both mean and median?
-
-Purchase count and revenue distributions are often right-skewed.
+This provides a revenue-exposure view.
 
 Example:
 
 ```text
-Active avg revenue    = 1,200
-Active median revenue = 320
+Churn rate = 25%
+Churned historical revenue share = 41%
 ```
 
-A small number of high-value users may be pulling the average upward.
+The churned segment may have contributed a disproportionately large share of historical purchaser revenue.
 
-Therefore, mean and median should be interpreted together.
+Do not label this metric as `lost revenue`, `future revenue loss` or `incremental revenue opportunity`. Historical contribution and future loss are different concepts.
 
 ---
 
-# 13. Purchaser Status chart
+# 15. Status diagnostics
 
-Compares the absolute volume of active versus churned purchasers.
+Active, churned and never-purchased groups are compared on:
 
-Example:
+- user volume,
+- average purchases,
+- median purchases,
+- average revenue,
+- median revenue,
+- average inactivity days.
+
+Mean and median should be read together.
 
 ```text
-Active   120,000
-Churned   80,000
+Active avg revenue    = 1,250
+Active median revenue = 310
 ```
 
-The bars show volume, not the business severity by themselves. Always interpret them together with churn rate and purchaser-base size.
+can indicate a high-value tail pulling the mean upward. This is common in digital commerce data where revenue distributions are often right-skewed.
 
 ---
 
-# 14. Churn Rate by Purchase Frequency chart
+# 16. Purchaser status chart
+
+Compares absolute active and churned purchaser volume.
+
+The chart shows volume, not rate. Interpret it together with churn rate and purchaser-base size.
+
+---
+
+# 17. Churn rate by purchase frequency
 
 Purchasers are grouped into:
 
@@ -594,40 +515,28 @@ Purchasers are grouped into:
 6+ purchases
 ```
 
-Churn rate is calculated separately for each group.
+Churn rate is calculated separately for each band.
 
-## Why this matters
-
-One-time buyers and highly repeat purchasers often have different retention patterns.
+This helps show the relationship between purchaser depth and retention behavior.
 
 Example:
 
 ```text
-1 purchase   → 52% churn
-2 purchases  → 31% churn
-3–5          → 18% churn
-6+           → 9% churn
+1 purchase   → 52%
+2 purchases  → 34%
+3–5          → 19%
+6+           → 10%
 ```
 
-This may suggest that deeper historical purchase engagement is associated with lower churn.
-
-However, this is correlation, not causality. You cannot conclude from this analysis alone that “making users purchase more will cause churn to decrease.”
+This can be a useful lifecycle-segmentation diagnostic. It is still descriptive, not causal. An association between purchase frequency and lower churn does not prove that increasing purchase frequency will itself cause churn to fall.
 
 ---
 
-# 15. Threshold Sensitivity chart
+# 18. Threshold sensitivity
 
-This is one of the most important controls in the toolkit.
+This chart shows how dependent the churn metric is on the cutoff assumption.
 
-Suppose the selected threshold is:
-
-```text
-90 days
-```
-
-The toolkit recalculates churn at nearby cutoffs.
-
-Example:
+For a 90-day selected threshold:
 
 ```text
 60 days  → 36%
@@ -638,43 +547,33 @@ Example:
 150 days → 17%
 ```
 
-## How to interpret it
+As the cutoff increases, churn classification becomes more conservative and the churn rate will usually decline.
 
-As the threshold becomes larger, it becomes harder for a user to qualify as churned, so churn rate will generally decline.
-
-The chart answers:
-
-> How sensitive is my churn result to the cutoff assumption?
-
-If:
+### Stable case
 
 ```text
-75 days = 30%
-90 days = 29%
+75 days  = 30%
+90 days  = 29%
 105 days = 28%
 ```
 
-then the result is relatively stable.
+The metric is relatively stable around the selected cutoff.
 
-If:
+### Sensitive case
 
 ```text
-75 days = 42%
-90 days = 29%
+75 days  = 42%
+90 days  = 29%
 105 days = 18%
 ```
 
-then small threshold changes materially alter the result.
-
-In that case, reporting a single churn rate as an absolute truth would be misleading.
+The metric is highly sensitive to the cutoff assumption. In this case, reporting a single churn rate without a sensitivity band can be misleading.
 
 ---
 
-# 16. Threshold Context / Gap Coverage
+# 19. Threshold context / gap coverage
 
-The churn output also shows where the selected threshold sits relative to historical purchase-gap behavior.
-
-Example:
+The selected cutoff is positioned against the historical repeat-purchase distribution.
 
 ```text
 Threshold = 90 days
@@ -682,54 +581,45 @@ Gap coverage = 91%
 P90 = 86 days
 ```
 
-This means the selected threshold is at least as long as about 91% of observed repeat-purchase intervals.
+A useful business readout would be:
 
-It is a behavioral sanity check, not a proof that 90 days is optimal.
+```text
+The 90-day inactivity window covers roughly 91% of observed repeat-purchase intervals and sits slightly above the historical P90.
+```
+
+This is a behavioral sanity check, not proof that the cutoff is optimal.
 
 ---
 
-# 17. How should a threshold be selected?
+# 20. Threshold calibration
 
-This basic toolkit deliberately does not choose the threshold automatically because churn definition depends on business context.
+Review the following together:
 
-Review together:
+1. median purchase gap,
+2. P75 / P90 / P95,
+3. histogram shape,
+4. cumulative coverage,
+5. sensitivity curve,
+6. category replenishment cycle,
+7. seasonality,
+8. campaign / promotion cadence,
+9. CRM contact strategy,
+10. observation-window length.
 
-1. Median purchase gap
-2. P75 / P90 / P95
-3. Purchase-gap histogram
-4. Cumulative coverage
-5. Threshold sensitivity
-6. Business purchase cycle
-7. Seasonality
-8. Product category
-9. Length of the historical observation window
-
-### Simple example
-
-Suppose:
+Example:
 
 ```text
-Median = 28
-P75 = 48
-P90 = 83
-P95 = 125
+Median = 29
+P75 = 51
+P90 = 87
+P95 = 128
 ```
 
-Reasonable candidate tests might include:
-
-```text
-60
-90
-120
-```
-
-Then compare sensitivity and business plausibility.
-
-> The toolkit does not automatically treat P90 as the churn threshold, and it should not. P90 is only one useful reference point.
+Candidate scenarios might be 60 / 90 / 120 days. The appropriate cutoff depends on both observed behavior and business use case.
 
 ---
 
-# 18. HTML Dashboard
+# 21. HTML dashboard
 
 `churn_analysis()` creates:
 
@@ -739,208 +629,159 @@ ga4_churn_dashboard.html
 
 The dashboard includes:
 
-- Selected threshold
-- Purchasers
-- Active purchasers
-- Churned users
-- Churn rate
-- Gap coverage
-- Churned historical revenue share
-- Analytical insights
-- Status diagnostics
-- Churn by purchase frequency
-- Threshold sensitivity
+- selected inactivity threshold,
+- purchaser base,
+- active purchaser volume,
+- churned purchaser volume,
+- churn rate,
+- gap coverage,
+- churned historical revenue share,
+- status diagnostics,
+- churn by purchase frequency,
+- threshold sensitivity,
+- analyst notes.
 
-The dashboard is a presentation layer only. Its definitions are identical to the notebook outputs.
-
----
-
-# 19. Important methodological limitations
-
-## 19.1 `user_pseudo_id` is not necessarily a real person
-
-GA4 `user_pseudo_id` is generally browser/device-instance oriented.
-
-The same person can generate multiple identifiers across:
-
-- multiple devices,
-- multiple browsers,
-- cookie resets.
-
-Therefore, results should be interpreted at the implemented identity level, not automatically as “unique customers.”
+The dashboard is intended for operational sharing. Metric definitions remain the same as in the notebook.
 
 ---
 
-## 19.2 Tracking errors directly affect churn metrics
+# 22. Measurement caveats
 
-Duplicate purchase events, missing purchase events, or incorrect revenue implementation affect:
+## `user_pseudo_id` is not a customer ID
 
-- purchase count,
-- revenue,
-- purchase-gap calculations,
-- churn classification.
+GA4 `user_pseudo_id` is generally device/browser scoped. The same person may produce multiple identifiers across mobile and desktop, different browsers, cookie resets or consent-state changes.
 
----
+Without logged-in user stitching, this should be interpreted as an observed-user analysis rather than a true customer-level analysis.
 
-## 19.3 Dataset start is not necessarily customer start
+## Purchase tracking quality
 
-A user appearing on the first day of the dataset may have existed long before the export window began.
+The following implementation issues directly affect churn output:
 
-The toolkit only knows what is visible in the selected data.
+- duplicate purchase events,
+- missing purchases,
+- broken `transaction_id`,
+- revenue duplication,
+- currency mismatch,
+- delayed or partial tagging.
 
----
+Ecommerce measurement QA should be completed before the churn output is used for lifecycle or CRM decisions.
 
-## 19.4 Dataset freshness matters
+## Export start-date bias
 
-Because:
+The BigQuery export start date is not the customer lifecycle start date. If export history is short, `first_purchase_date`, `purchase_count` and `repeat rate` may understate historical behavior.
+
+## Observation-window bias
+
+With a 90-day cutoff, a purchaser whose last purchase was 30 days ago has not yet had a full 90-day outcome window. The user is classified as active, but that does not mean they will remain active.
+
+## Classification is not prediction
+
+This framework answers:
 
 ```text
-analysis_date = MAX(event_date)
+Which historical purchasers are currently in the churned segment under the selected inactivity rule?
 ```
 
-an outdated source dataset produces an outdated churn snapshot.
+It does not answer:
+
+```text
+Who will churn in the next 30 days?
+```
+
+Prediction requires a separate outcome definition, feature set, training window and model-validation process.
+
+## Seasonality
+
+The basic version does not adjust for seasonality. Use a global cutoff cautiously in categories such as travel, insurance, annual renewal, gifting, fashion seasonality and durable goods.
 
 ---
 
-## 19.5 Right censoring / observation-window effects
+# 23. Reporting recommendation
 
-Users who purchased recently have not yet had enough time to demonstrate churn.
+A churn rate is more useful when reported with its behavioral context.
 
 Example:
 
-If threshold = 90 days but a user purchased 20 days ago, they are classified as active. The toolkit cannot know whether they will churn later.
-
----
-
-## 19.6 Classification is not prediction
-
-The toolkit does not answer:
-
 ```text
-Who will churn next?
+Inactivity threshold          90 days
+Purchaser churn rate          27%
+Observed gap P90              84 days
+Gap coverage @ 90d            91%
+Churn @ 75d                   31%
+Churn @ 105d                  24%
+One-time purchaser churn      43%
+6+ purchase churn             10%
+Churned historical rev. share 38%
 ```
 
-It answers:
+This keeps both the KPI and the assumptions behind it visible.
+
+---
+
+# 24. Analyst checklist
+
+- [ ] Correct GCP project selected?
+- [ ] Correct GA4 property / dataset selected?
+- [ ] Does `events_*` cover the intended observation period?
+- [ ] Is the dataset fresh?
+- [ ] Has purchase-event QA been completed?
+- [ ] Are revenue and currency mappings reliable?
+- [ ] Has duplicate-transaction risk been checked?
+- [ ] Is the purchaser base large enough to interpret?
+- [ ] Are repeat-purchase observations sufficient?
+- [ ] Have P50 / P75 / P90 / P95 been reviewed?
+- [ ] Have the histogram and cumulative coverage been reviewed?
+- [ ] Has threshold sensitivity been checked?
+- [ ] Have one-time and repeat purchasers been separated in the readout?
+- [ ] Is historical revenue share clearly distinguished from future lost revenue?
+- [ ] Is the `user_pseudo_id` identity limitation documented?
+
+---
+
+# 25. Terminology
+
+**Grain** — The analytical unit represented by one row. In `churn_base`, one row = one `user_pseudo_id`.
+
+**Purchaser base** — Observed users with at least one purchase event.
+
+**Repeat purchaser** — Purchaser with more than one observed purchase.
+
+**Purchase cadence** — Timing pattern of repeat purchasing.
+
+**Purchase gap** — Number of days between consecutive distinct purchase dates.
+
+**Recency** — Days from last purchase to the analysis date.
+
+**Inactivity threshold / cutoff** — Recency boundary used to classify a purchaser as churned.
+
+**P90** — Value at or below which roughly 90% of observed intervals fall.
+
+**IQR** — P75 minus P25; spread of the middle 50% of the distribution.
+
+**Sensitivity analysis** — Testing how much the churn metric moves when the cutoff changes.
+
+**Metric scope** — Population and grain on which a KPI is calculated.
+
+---
+
+## Summary
 
 ```text
-Which historical purchasers are currently classified as churned under the selected inactivity threshold?
+Validate query scope
+        ↓
+Build purchaser-level base
+        ↓
+Profile repeat-purchase cadence
+        ↓
+Select a business-relevant inactivity window
+        ↓
+Classify active vs churned purchasers
+        ↓
+Check threshold sensitivity
+        ↓
+Read frequency + revenue diagnostics
+        ↓
+Use outputs for lifecycle / CRM / retention analysis
 ```
 
----
-
-## 19.7 No causal inference
-
-If users with 6+ purchases have lower churn, you cannot conclude:
-
-```text
-Having six purchases causes lower churn.
-```
-
-The relationship is descriptive.
-
----
-
-## 19.8 Seasonality is not modeled
-
-The basic release does not explicitly control for:
-
-- monthly seasonality,
-- annual purchase cycles,
-- promotional periods,
-- product replacement cycles.
-
-Industries with long or seasonal purchase cycles require additional business interpretation.
-
----
-
-# 20. How should results be presented?
-
-Instead of reporting only one churn rate, a more transparent summary is:
-
-```text
-Selected threshold: 90 days
-Churn rate: 27%
-Observed purchase-gap P90: 84 days
-Gap coverage at 90 days: 91%
-75-day sensitivity: 31%
-105-day sensitivity: 24%
-One-time purchaser churn: 43%
-6+ purchase churn: 10%
-```
-
-This makes the threshold assumption visible instead of hiding it behind a single KPI.
-
----
-
-# 21. Recommended analyst checklist
-
-Before sharing results, verify:
-
-- [ ] Correct GCP project selected
-- [ ] Correct GA4 dataset selected
-- [ ] Correct `table_id` / wildcard selected
-- [ ] Latest event date is reasonably current
-- [ ] Purchase tracking is reliable
-- [ ] Revenue implementation is reliable
-- [ ] Purchase-gap distribution has sufficient observations
-- [ ] Median / P75 / P90 / P95 reviewed
-- [ ] Threshold sensitivity reviewed
-- [ ] One-time vs repeat purchaser behavior reviewed
-- [ ] Churned revenue share is not presented as future lost revenue
-- [ ] `user_pseudo_id` identity limitation is disclosed
-
----
-
-# 22. Glossary
-
-**Grain**  
-What one row represents. For `churn_base`, grain = 1 `user_pseudo_id`.
-
-**Purchaser**  
-A user with at least one purchase event.
-
-**Repeat purchaser**  
-A user with more than one purchase.
-
-**Purchase gap**  
-Days between two consecutive distinct purchase dates for one user.
-
-**Threshold**  
-Maximum inactivity period allowed before a purchaser is classified as churned.
-
-**Churned purchaser**  
-A purchaser whose inactivity exceeds the selected threshold.
-
-**Percentile**  
-A value at or below which a given share of observations fall.
-
-**P90**  
-A value at or below which approximately 90% of observations fall.
-
-**IQR**  
-P75 − P25. Spread of the middle 50% of the distribution.
-
-**Sensitivity analysis**  
-Testing how much the churn result changes when the threshold assumption changes.
-
----
-
-## Final interpretation framework
-
-The intended analytical flow is:
-
-```text
-Understand historical purchase behavior
-        ↓
-Inspect the purchase-gap distribution
-        ↓
-Choose a business-plausible threshold
-        ↓
-Run churn classification
-        ↓
-Test threshold sensitivity
-        ↓
-Interpret frequency and revenue diagnostics
-```
-
-A churn rate is not the whole answer. The real analytical value comes from understanding **which behavioral distribution and which threshold assumption produced that churn rate**.
+The main principle is simple: churn rate should never be read in isolation. The purchaser base, observation window and inactivity cutoff are part of the metric definition and should remain visible in any reporting or decision-making context.
