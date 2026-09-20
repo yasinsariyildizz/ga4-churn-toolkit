@@ -1,4 +1,4 @@
-from .pipeline import GA4Analysis
+from .pipeline import ChurnAnalysis
 
-__all__ = ["GA4Analysis"]
-__version__ = "0.0.1"
+__all__ = ["ChurnAnalysis"]
+__version__ = "0.1.0"
