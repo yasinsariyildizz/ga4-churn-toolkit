@@ -4,6 +4,15 @@ A lightweight, open-source **purchase-based churn analysis toolkit for GA4 BigQu
 
 The toolkit is designed for BigQuery / Colab Enterprise notebooks. Users provide four source/output inputs, then choose the churn threshold only when running churn analysis.
 
+## Analysis & interpretation guides
+
+Before using the outputs in reporting or decision-making, read the detailed methodology and interpretation guides:
+
+- [Türkçe analiz ve yorumlama rehberi](docs/ANALYSIS_GUIDE_TR.md)
+- [English analysis & interpretation guide](docs/ANALYSIS_GUIDE_EN.md)
+
+These guides explain the churn logic, purchase-gap statistics, percentile interpretation, charts, threshold sensitivity, automatic insights, methodological limitations, and common interpretation mistakes.
+
 ## Inputs
 
 ```python
