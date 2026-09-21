@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ga4-churn-toolkit"
-version = "0.1.0"
-description = "A lightweight purchase-based GA4 churn analysis toolkit for BigQuery notebooks."
+version = "0.2.0"
+description = "A lightweight user_id-based GA4 purchase churn toolkit with pre-churn analysis for BigQuery and Google Colab."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
