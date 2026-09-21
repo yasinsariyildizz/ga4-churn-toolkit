@@ -1,89 +1,102 @@
-# GA4 Churn Toolkit — Türkçe Kullanım ve Yorumlama Rehberi
+# GA4 Churn Toolkit — Türkçe Analiz ve Yorumlama Rehberi
 
-Bu rehber, churn analizini ilk defa gören birinin bile mantığı anlayabilmesi için hazırlanmıştır. Burada amaç sadece kodu çalıştırmak değil; çıkan sayıların ve grafiklerin ne anlattığını doğru yorumlamaktır.
+Bu doküman, `ga4-churn-toolkit` içindeki satın alma bazlı churn analizinin yöntemini, çıktılarını ve yorumlama biçimini açıklar. Amaç yalnızca kodun nasıl çalıştırıldığını göstermek değil; üretilen sayıların hangi soruya cevap verdiğini, hangi durumda nasıl yorumlanması gerektiğini ve hangi sonuçların çıkarılmaması gerektiğini netleştirmektir.
 
-Bu araç GA4 verisindeki satın alma hareketlerine bakar. Bir kullanıcının en son ne zaman alışveriş yaptığını bulur ve seçtiğimiz gün sayısına göre kullanıcının hâlâ aktif mi yoksa artık geri dönmemiş mi olduğunu sınıflandırır.
+Analiz üç kullanıcı durumu üretir:
 
-Örneğin:
-
-```python
-analysis.churn_analysis(90)
+```text
+active_purchaser
+pre_churn
+churned
 ```
 
-Buradaki `90`, son alışverişten sonra 90 gün geçmişse kullanıcıyı churn olmuş kabul et demektir.
+Örnek kullanım:
 
-Bu araç geleceği tahmin etmez. Yani “bu kullanıcı yakında churn olacak” demez. Sadece elimizdeki geçmiş veriye bakıp kullanıcıları mevcut durumlarına göre ayırır.
+```python
+analysis.churn_analysis(60, 90)
+```
+
+Bu örnekte sınıflandırma şöyledir:
+
+```text
+Son alışverişten 0–60 gün geçmişse     → active_purchaser
+Son alışverişten 61–90 gün geçmişse    → pre_churn
+Son alışverişten 90 günden fazla geçmişse → churned
+```
+
+Analiz gelecekte kimin churn olacağını tahmin etmez. Mevcut GA4 geçmişine bakarak, tanımlanan gün sınırlarına göre mevcut kullanıcı durumunu sınıflandırır.
 
 ---
 
-## 1. Analizin temel mantığı
+# 1. Analizde hangi kullanıcı kimliği kullanılır?
 
-Önce her kullanıcının son satın alma tarihi bulunur.
+Bu sürümde bütün hesaplamalar **`user_id` bazında** yapılır.
 
-Sonra veri içindeki en güncel tarih ile kullanıcının son satın alma tarihi arasındaki gün farkı hesaplanır.
-
-Basit olarak:
+Kaynak GA4 verisinde yalnızca `user_id` dolu olan satırlar analize alınır:
 
 ```text
-Son alışverişten bu yana geçen gün
-=
-verideki en güncel tarih - son alışveriş tarihi
+user_id IS NOT NULL
+```
+
+Bunun anlamı şudur: analiz, GA4 uygulamasında `user_id` atanmış tanımlı kullanıcıları kapsar. Sadece `user_pseudo_id` bulunan anonim kullanıcılar bu çalışmaya dahil edilmez.
+
+Bu nedenle aşağıdaki iki sayı doğal olarak farklı olabilir:
+
+```text
+GA4 toplam kullanıcı: 1.200.000
+user_id bulunan kullanıcı: 280.000
+```
+
+Churn analizi 280.000 kişilik tanımlı kullanıcı evreni üzerinden çalışır.
+
+Bu fark bir hata değildir. Ancak sonuç raporlanırken kullanıcı kapsamı açık biçimde belirtilmelidir.
+
+Önerilen ifade:
+
+> Analiz, GA4 BigQuery export verisinde `user_id` bulunan tanımlı kullanıcılar üzerinden hesaplanmıştır.
+
+### `user_id` kullanımının avantajı
+
+Aynı `user_id` farklı cihaz ve oturumlarda gönderiliyorsa kullanıcı davranışı daha tutarlı biçimde birleştirilebilir. Bu, `user_pseudo_id` bazlı cihaz/tarayıcı seviyesindeki analize göre müşteri davranışına daha yakın bir görünüm sağlayabilir.
+
+### Dikkat edilmesi gereken nokta
+
+`user_id` implementasyonu eksik veya yalnızca belirli kullanıcı gruplarında varsa analiz bütün müşteri kitlesini temsil etmeyebilir. Örneğin sadece giriş yapan üyelerde `user_id` varsa sonuçlar daha sadık veya daha aktif bir kullanıcı grubuna doğru eğilebilir.
+
+---
+
+# 2. Analiz tarihi nasıl belirlenir?
+
+Analiz tarihi ayrıca girilmez. Kaynak veride bulunan en güncel `event_date` kullanılır:
+
+```text
+analysis_date = MAX(event_date)
 ```
 
 Örnek:
 
 ```text
-Verideki en güncel tarih: 30 Eylül
-Kullanıcının son alışverişi: 10 Haziran
-Aradan geçen süre: 112 gün
+Bugünün tarihi: 21 Eylül
+BigQuery'deki son event_date: 18 Eylül
 ```
 
-Eğer analizde 90 gün seçildiyse bu kullanıcı churn olmuş sayılır.
+Bu durumda bütün süre hesapları 18 Eylül'e göre yapılır.
 
-Sınıflandırma şu şekilde yapılır:
+Örneğin son alışveriş tarihi 20 Haziran olan kullanıcı için:
 
 ```text
-Hiç alışveriş yapmamış
-→ never_purchased
-
-En az bir alışveriş yapmış
-ve son alışverişinin üzerinden seçilen süreden daha az zaman geçmiş
-→ active_purchaser
-
-En az bir alışveriş yapmış
-ve son alışverişinin üzerinden seçilen süreden daha fazla zaman geçmiş
-→ churned
+18 Eylül - 20 Haziran = 90 gün
 ```
 
-Buradaki önemli nokta şu:
+hesabı yapılır.
 
-**Hiç alışveriş yapmamış kullanıcı churn olmuş sayılmaz.** Çünkü bu kişinin kaybedilmiş müşteri olması için önce müşteri olması gerekir.
+Bu nedenle sonuç paylaşılmadan önce `analysis_date` mutlaka kontrol edilmelidir. Veri akışı birkaç gün durmuşsa churn ve pre-churn sınıfları gerçekte olması gerekenden daha düşük görünebilir.
 
 ---
 
-## 2. Analiz hangi tarihi baz alıyor?
+# 3. Başlangıç bilgileri
 
-Kullanıcı ayrıca bir analiz tarihi girmiyor.
-
-Araç, kaynak veride gördüğü en güncel günü kullanıyor:
-
-```text
-analysis_date = verideki en büyük event_date
-```
-
-Örneğin bugün 20 Eylül olabilir ama BigQuery tablosundaki son veri 31 Ağustos'a ait olabilir.
-
-Bu durumda churn hesabı 20 Eylül'e göre değil, 31 Ağustos'a göre yapılır.
-
-Bu yüzden sonuçlara bakarken ilk kontrol edilmesi gerekenlerden biri şudur:
-
-> Verinin son tarihi gerçekten güncel mi?
-
-Eğer veri 20 gün geriden geliyorsa churn sonucu da 20 gün geriden gelecektir.
-
----
-
-## 3. Başlangıçta hangi bilgileri giriyoruz?
+Analiz şu bilgilerle başlatılır:
 
 ```python
 analysis = ChurnAnalysis(
@@ -94,883 +107,1090 @@ analysis = ChurnAnalysis(
 )
 ```
 
-Burada dört bilgi var:
-
-| Alan | Ne işe yarıyor? |
+| Alan | Açıklama |
 |---|---|
-| `project_id` | GA4 verisinin bulunduğu Google Cloud projesi |
-| `dataset_id` | GA4 verisinin bulunduğu BigQuery dataset'i |
-| `table_id` | Okunacak tablo. Genelde `events_*` |
-| `output_dataset_id` | Analiz sonucunda oluşturulacak tabloların yazılacağı dataset |
+| `project_id` | GA4 BigQuery export verisinin bulunduğu Google Cloud projesi |
+| `dataset_id` | GA4 export dataset'i |
+| `table_id` | Kaynak tablo veya tablo deseni. Genellikle `events_*` |
+| `output_dataset_id` | Analiz tablolarının yazılacağı dataset |
 
-Churn için kullanılacak gün sayısı burada girilmez.
-
-Bunun nedeni şu: önce satın alma aralıklarını görmek, sonra uygun gün sayısına karar vermek daha sağlıklıdır.
+Pre-churn ve churn gün sınırları başlangıçta verilmez. Önce satın alma aralıklarının incelenmesi, ardından gün sınırlarının belirlenmesi amaçlanır.
 
 ---
 
-# 4. Analizi hangi sırayla çalıştırıyoruz?
-
-Önerilen sıra:
+# 4. Önerilen çalışma sırası
 
 ```python
 analysis.dry_run()
 analysis.create_base_table()
 analysis.purchase_day_distribution()
-analysis.churn_analysis(90)
+analysis.churn_analysis(60, 90)
 ```
 
-Bu sırayı ofiste şöyle düşünebilirsin:
+Bu akış sırasıyla şu sorulara cevap verir:
 
 ```text
-1. Bu sorgu ne kadar veri okuyacak?
-2. Kullanıcıların genel satın alma görünümü nasıl?
-3. Kullanıcılar normalde kaç günde bir tekrar alışveriş yapıyor?
-4. Buna göre 90 gün gibi bir sınır seçince kaç kişi churn oluyor?
+1. BigQuery ne kadar veri tarayacak?
+2. Tanımlı kullanıcı ve alışveriş yapan kullanıcı kitlesi nasıl görünüyor?
+3. Tekrar alışveriş yapan kullanıcılar normalde kaç günde geri dönüyor?
+4. Hangi günlerden sonra kullanıcı pre-churn ve churn olarak sınıflandırılmalı?
+5. Seçilen eşikler sonucunda kullanıcı dağılımı ve gelir görünümü nasıl değişiyor?
 ```
 
 ---
 
-# 5. `dry_run()` ne yapıyor?
+# 5. `dry_run()` — sorgu maliyeti ön kontrolü
 
 ```python
 analysis.dry_run()
 ```
 
-Bu adım henüz analizi çalıştırmaz.
+Bu fonksiyon ana analiz tablolarını oluşturmadan önce BigQuery'nin yaklaşık ne kadar veri tarayacağını gösterir.
 
-Sadece BigQuery'nin yaklaşık ne kadar veri okuyacağını gösterir.
-
-Örnek:
+Örnek çıktı:
 
 ```text
-Estimated scan: 48 GB
+Estimated scan: 86.4 GB
 ```
 
-Bu sayı bir analiz sonucu değildir.
+Bu değer bir iş metriği değildir. Yalnızca sorgu hacmini ve olası BigQuery maliyetini kontrol etmek için kullanılır.
 
-Yani “48 GB kullanıcı var” gibi bir anlamı yoktur.
+Özellikle `table_id="events_*"` kullanıldığında bütün geçmiş tablolar taranabilir.
 
-Sadece sorgu çalışırsa yaklaşık 48 GB veri taranacağını gösterir.
+### Örnek yorum
 
-Bu özellikle maliyet kontrolü için önemlidir.
+Beklenen veri hacmi son 6 ay için yaklaşık 100 GB iken dry run 2.7 TB gösteriyorsa aşağıdaki noktalar kontrol edilmelidir:
 
-### Ne zaman dikkat etmek gerekir?
+- yanlış dataset seçilmiş olabilir,
+- beklenenden daha uzun geçmiş veri taranıyor olabilir,
+- farklı GA4 property verileri aynı dataset içinde olabilir,
+- test için tüm geçmişin taranmasına ihtiyaç olmayabilir.
 
-Örneğin normalde birkaç aylık veri beklerken 2 TB tarama görünüyorsa şunlar kontrol edilmelidir:
-
-- Yanlış proje mi seçildi?
-- Yanlış dataset mi seçildi?
-- `events_*` ile gereğinden fazla tarih mi taranıyor?
-- Test için bütün geçmiş veriyi okumaya gerçekten gerek var mı?
-
-Bu adımı “ön kontrol” gibi düşünebilirsin.
+`dry_run()` maliyet kontrolü içindir; churn sonucu veya kullanıcı davranışı hakkında yorum üretmez.
 
 ---
 
-# 6. `create_base_table()` ne yapıyor?
+# 6. `create_base_table()` — kullanıcı bazlı temel analiz tablosu
 
 ```python
 analysis.create_base_table()
 ```
 
-Bu fonksiyon her kullanıcı için tek satırlık bir özet tablo oluşturur.
+Bu fonksiyon her `user_id` için tek satırlık bir özet tablo oluşturur.
 
-Yani:
+Tablonun satır seviyesi:
 
 ```text
-1 satır = 1 user_pseudo_id
+1 satır = 1 user_id
 ```
 
-Buradaki `user_pseudo_id`, GA4'ün cihaz ve tarayıcı bazlı kullanıcı kimliğidir.
+Ana çıktı tablosu:
 
-Bunu “kesin gerçek kişi” gibi düşünmemek gerekir.
+```text
+<output_dataset>.churn_base
+```
 
-Aynı kişi:
-
-- telefondan girdiğinde,
-- bilgisayardan girdiğinde,
-- farklı tarayıcı kullandığında,
-- çerezleri sildiğinde
-
-farklı `user_pseudo_id` değerleri oluşturabilir.
-
-Bu yüzden sonuçları “gerçek müşteri sayısı” değil, GA4'ün görebildiği kullanıcı kimliği seviyesinde yorumlamak gerekir.
-
----
-
-## 7. Temel tabloda hangi bilgiler var?
-
-Her kullanıcı için aşağıdaki bilgiler hazırlanır:
+## 6.1 Temel alanlar
 
 | Alan | Açıklama |
 |---|---|
-| `user_pseudo_id` | GA4 kullanıcı kimliği |
-| `first_event_date` | Bu kullanıcının veride görüldüğü ilk gün |
-| `last_event_date` | Veride görüldüğü son gün |
-| `event_count` | Toplam yaptığı hareket sayısı |
-| `session_count` | Toplam oturum sayısı |
-| `purchase_count` | Kaç alışveriş yaptığı |
-| `revenue` | GA4'e göre toplam alışveriş geliri |
-| `first_purchase_date` | İlk alışveriş tarihi |
-| `last_purchase_date` | Son alışveriş tarihi |
+| `user_id` | Analizde kullanılan kullanıcı kimliği |
+| `first_event_date` | Kullanıcının kaynak veride ilk görüldüğü gün |
+| `last_event_date` | Kullanıcının kaynak veride son görüldüğü gün |
+| `event_count` | Kullanıcının toplam event sayısı |
+| `session_count` | Kullanıcının toplam farklı `ga_session_id` sayısı |
+| `purchase_count` | Kullanıcının toplam `purchase` event sayısı |
+| `revenue` | GA4'te görülen toplam purchase revenue |
+| `first_purchase_date` | İlk satın alma tarihi |
+| `last_purchase_date` | Son satın alma tarihi |
 | `analysis_date` | Kaynak verideki en güncel tarih |
-| `days_since_last_purchase` | Son alışverişten bu yana geçen gün |
-
-Bu tablo daha sonraki bütün churn hesaplarının temelini oluşturur.
+| `days_since_last_purchase` | Son satın almadan analiz tarihine kadar geçen gün |
 
 ---
 
-# 8. Base table ekranındaki sayılar nasıl okunmalı?
+# 7. `create_base_table()` çıktıları nasıl yorumlanır?
 
 ## Users
 
-Veride görülen toplam farklı `user_pseudo_id` sayısıdır.
+Analize dahil edilen farklı `user_id` sayısıdır.
 
-Gerçek kişi sayısıyla birebir aynı olmak zorunda değildir.
+Bu sayı GA4 toplam kullanıcı sayısı değildir. Yalnızca `user_id` bulunan tanımlı kullanıcıları ifade eder.
+
+Örnek:
+
+```text
+Users = 240.000
+```
+
+Bu çıktı, seçilen kaynak veri içinde 240.000 farklı `user_id` bulunduğunu gösterir.
 
 ## Purchasers
 
-En az bir kere alışveriş yapmış kullanıcı sayısıdır.
+En az bir `purchase` event'i olan kullanıcı sayısıdır.
 
-Churn hesabında asıl baktığımız kitle budur.
+Örnek:
+
+```text
+Users      = 240.000
+Purchasers = 72.000
+```
+
+Bu durumda analize dahil edilen tanımlı kullanıcıların 72.000'i en az bir satın alma yapmıştır.
+
+Churn ve pre-churn oranlarının temel kitlesi bu 72.000 kullanıcıdır.
 
 ## One-time purchasers
 
-Sadece bir kez alışveriş yapan kullanıcılardır.
+Sadece bir purchase kaydı bulunan kullanıcı sayısıdır.
 
-Bu grup önemlidir çünkü tek alışveriş yapan kullanıcılarla sürekli alışveriş yapan kullanıcıların davranışı genelde aynı değildir.
+Örnek:
+
+```text
+Purchasers          = 72.000
+One-time purchasers = 46.000
+Repeat purchasers   = 26.000
+```
+
+Bu yapı, satın alma yapan kitlenin büyük kısmının ikinci satın almaya geçemediğini gösterebilir. Ancak bunun yorumlanabilmesi için veri geçmişinin yeterince uzun olması gerekir.
+
+Örneğin dataset sadece son 30 günü içeriyorsa yeni müşteri olan birçok kişi henüz ikinci satın alma fırsatı bulmamış olabilir.
 
 ## Repeat purchasers
 
-Birden fazla alışveriş yapan kullanıcılardır.
+Birden fazla purchase kaydı bulunan kullanıcı sayısıdır.
 
-Bu kullanıcılar bize “normalde kaç günde bir tekrar alışveriş yapılıyor?” sorusunu cevaplamada yardımcı olur.
+`purchase_day_distribution()` fonksiyonundaki satın alma aralıkları esas olarak bu kullanıcıların davranışından oluşur.
 
 ## Purchaser rate
-
-```text
-alışveriş yapan kullanıcı / tüm kullanıcılar
-```
-
-Örnek:
-
-```text
-100.000 kullanıcı
-10.000 alışveriş yapan kullanıcı
-
-Purchaser rate = %10
-```
-
-Bu churn oranı değildir.
-
-Ayrıca klasik e-ticaret dönüşüm oranı gibi de düşünülmemelidir. Çünkü burada oturum değil kullanıcı bazında bakıyoruz.
-
-## Repeat rate
-
-```text
-birden fazla alışveriş yapan kullanıcı / alışveriş yapan tüm kullanıcılar
-```
-
-Örnek:
-
-```text
-10.000 alışveriş yapan kullanıcı
-3.000 tekrar alışveriş yapan kullanıcı
-
-Repeat rate = %30
-```
-
-Bu bize alışveriş yapan kitlenin ne kadarının yeniden geldiğini gösterir.
-
-## Revenue
-
-GA4'te kayıtlı toplam alışveriş geliridir.
-
-Burada önemli bir uyarı var:
-
-GA4 geliri ile şirketin muhasebe veya ERP sistemindeki gelir birebir aynı olmayabilir.
-
-Sebep olarak:
-
-- eksik takip,
-- aynı siparişin iki kez gönderilmesi,
-- yanlış para birimi,
-- iptal/iade farkları,
-- takip hataları
-
-etkili olabilir.
-
-Bu nedenle gelir rakamı kullanılmadan önce GA4 kurulumunun doğru olduğundan emin olunmalıdır.
-
----
-
-# 9. `purchase_day_distribution()` ne yapıyor?
-
-```python
-analysis.purchase_day_distribution()
-```
-
-Bu bölüm aslında churn analizinin en önemli hazırlık adımıdır.
-
-Amaç şudur:
-
-> Kullanıcılar normalde iki alışveriş arasında kaç gün bekliyor?
-
-Örneğin bir kullanıcı şu tarihlerde alışveriş yapmış olsun:
-
-```text
-10 Ocak
-25 Ocak
-20 Şubat
-```
-
-Bu kullanıcı için iki bekleme süresi oluşur:
-
-```text
-10 Ocak → 25 Ocak = 15 gün
-25 Ocak → 20 Şubat = 26 gün
-```
-
-Sistem bütün tekrar alışveriş yapan kullanıcılar için bu aralıkları hesaplar.
-
-Aynı gün içinde iki alışveriş varsa o gün tek gün olarak alınır.
-
-Yani:
-
-```text
-10 Ocak sabah alışveriş
-10 Ocak akşam alışveriş
-```
-
-iki ayrı gün aralığı oluşturmaz.
-
----
-
-# 10. Gap Observations ne demek?
-
-Bu sayı toplam kaç alışveriş aralığı hesaplandığını gösterir.
-
-Örneğin bir kullanıcı 5 farklı günde alışveriş yaptıysa:
-
-```text
-1. alışveriş → 2. alışveriş
-2. alışveriş → 3. alışveriş
-3. alışveriş → 4. alışveriş
-4. alışveriş → 5. alışveriş
-```
-
-toplam 4 aralık oluşur.
-
-Bu yüzden:
-
-```text
-alışveriş aralığı sayısı
-```
-
-ile
-
-```text
-tekrar alışveriş yapan kullanıcı sayısı
-```
-
-aynı olmak zorunda değildir.
-
----
-
-# 11. Mean yani ortalama alışveriş aralığı
-
-Bu, bütün alışveriş aralıklarının ortalamasıdır.
-
-Örnek:
-
-```text
-10 gün
-12 gün
-14 gün
-15 gün
-180 gün
-```
-
-180 günlük çok uzun bir değer ortalamayı ciddi şekilde yukarı çekebilir.
-
-Bu yüzden sadece ortalamaya bakıp churn sınırı seçmek doğru değildir.
-
----
-
-# 12. Median yani ortanca değer
-
-Median, değerleri küçükten büyüğe sıraladığımızda ortada kalan değerdir.
-
-Örneğin:
-
-```text
-10
-12
-14
-15
-180
-```
-
-burada median 14'tür.
-
-Ortalama ise 46'dan fazladır.
-
-Görüldüğü gibi uzun süre bekleyen birkaç kullanıcı ortalamayı yükseltirken median daha dengeli bir fikir verebilir.
-
-Bu nedenle satın alma aralıklarını değerlendirirken median çoğu zaman daha faydalıdır.
-
-Örnek:
-
-```text
-Median = 31 gün
-```
-
-Bu, gözlenen alışveriş aralıklarının yaklaşık yarısının 31 gün veya daha kısa olduğunu gösterir.
-
----
-
-# 13. P25, P75, P90 ve P95 ne demek?
-
-Bunları mümkün olduğunca basit düşünelim.
-
-## P25
-
-Alışveriş aralıklarının yaklaşık %25'i bu gün sayısının altında veya eşittir.
-
-## P75
-
-Alışveriş aralıklarının yaklaşık %75'i bu gün sayısının altında veya eşittir.
-
-Örnek:
-
-```text
-P25 = 18 gün
-P75 = 55 gün
-```
-
-Bu durumda alışveriş aralıklarının orta bölümünün büyük kısmı yaklaşık 18–55 gün arasındadır.
-
-## P90
-
-Alışveriş aralıklarının yaklaşık %90'ı bu sürenin altında veya eşittir.
-
-Örnek:
-
-```text
-P90 = 84 gün
-```
-
-Bu şu anlama gelir:
-
-> Gözlemlediğimiz tekrar alışveriş aralıklarının yaklaşık %90'ı 84 gün içinde gerçekleşmiş.
-
-Bu yüzden 90 gün gibi bir churn sınırı seçmek mantıklı bir aday olabilir.
-
-Ama bu kesin kural değildir.
-
-## P95
-
-Aynı mantıkla alışveriş aralıklarının yaklaşık %95'inin altında kaldığı süreyi gösterir.
-
-P95 genelde daha uzun bekleyen müşterileri de içine alan daha geniş bir bakış sunar.
-
----
-
-# 14. IQR ne anlatıyor?
-
-IQR şu şekilde hesaplanır:
-
-```text
-P75 - P25
-```
-
-Örnek:
-
-```text
-P25 = 20 gün
-P75 = 50 gün
-IQR = 30 gün
-```
-
-Bu değer, kullanıcıların orta bölümünde alışveriş aralıklarının ne kadar yayıldığını gösterir.
-
-IQR düşükse kullanıcıların davranışı birbirine daha yakın olabilir.
-
-IQR yüksekse bazı kullanıcılar çok hızlı, bazıları çok geç tekrar alışveriş yapıyor olabilir.
-
-Bu durumda herkese aynı churn sınırını uygulamak daha tartışmalı hale gelir.
-
----
-
-# 15. Standart sapma ne anlatıyor?
-
-Standart sapma, alışveriş aralıklarının birbirinden ne kadar farklı olduğunu anlamaya yarar.
-
-Yüksekse kullanıcı davranışları daha dağınıktır.
-
-Düşükse kullanıcıların alışveriş aralıkları birbirine daha yakındır.
-
-Bu değeri tek başına yorumlamak yerine median, P75 ve P90 ile birlikte okumak daha sağlıklıdır.
-
----
-
-# 16. Coefficient of Variation ne anlatıyor?
-
-Arayüzde bu değer görünüyorsa basitçe şöyle düşün:
-
-> Alışveriş aralıkları kendi ortalamasına göre ne kadar dağınık?
-
-Kabaca:
-
-```text
-0.5'in altı  → daha düzenli davranış
-0.5–1 arası  → orta seviyede farklılık
-1 ve üzeri   → oldukça değişken davranış
-```
-
-Bunlar kesin kurallar değildir.
-
-Sadece “herkese tek bir churn süresi uygulamak ne kadar mantıklı?” sorusuna yardımcı olur.
-
----
-
-# 17. Purchase-gap histogram grafiği nasıl okunur?
-
-Grafikte alışverişler arasındaki bekleme süreleri gruplara ayrılır:
-
-```text
-0–7 gün
-8–14 gün
-15–30 gün
-31–60 gün
-61–90 gün
-91–180 gün
-181–365 gün
-366+ gün
-```
-
-Her çubuğun uzunluğu o aralıkta kaç alışveriş bekleme süresi olduğunu gösterir.
-
-Örneğin en yüksek çubuk:
-
-```text
-15–30 gün
-```
-
-ise birçok tekrar alışveriş 15–30 gün arasında gerçekleşiyor olabilir.
-
-Eğer 181 gün ve üzerindeki çubuklar da yüksekse bunun birkaç nedeni olabilir:
-
-- ürün çok sık alınan bir ürün değildir,
-- müşteri grupları birbirinden farklı davranıyordur,
-- bazı ürünler mevsimseldir,
-- veri geçmişi çok uzundur,
-- kullanıcıların bir kısmı gerçekten çok geç geri dönüyordur.
-
-Buradan doğrudan:
-
-```text
-En yüksek çubuk 31–60 gün, o zaman churn süresi 60 gün olmalı
-```
-
-gibi bir sonuç çıkarılmamalıdır.
-
-Grafik bize davranışın şeklini gösterir. Kararı tek başına vermez.
-
----
-
-# 18. Cumulative Repeat-Purchase Coverage grafiği nasıl okunur?
-
-Bu grafik şu soruya cevap verir:
-
-> Alışverişler arasındaki bekleme sürelerinin yüzde kaçı belirli bir günün içinde kalıyor?
-
-Örnek:
-
-```text
-30 gün  → %48
-60 gün  → %72
-90 gün  → %89
-180 gün → %97
-```
-
-Bunun anlamı:
-
-- alışveriş aralıklarının %48'i 30 gün içinde,
-- %72'si 60 gün içinde,
-- %89'u 90 gün içinde,
-- %97'si 180 gün içinde gerçekleşmiş.
-
-Bu grafik churn sınırı seçerken çok faydalıdır.
-
-Örneğin 90 günlük sınır seçtiğinde %89 görünüyorsa, geçmişte gözlenen alışveriş aralıklarının yaklaşık %89'u zaten 90 gün içinde gerçekleşmiş demektir.
-
-Ama bu:
-
-```text
-Kullanıcıların %89'u 90 günde geri geliyor
-```
-
-demek değildir.
-
-Burada kullanıcı sayısını değil, iki alışveriş arasındaki süreleri sayıyoruz.
-
----
-
-# 19. Purchase Behavior Insights bölümü nasıl okunmalı?
-
-Araç, hesaplanan sonuçlardan kısa açıklamalar üretir.
-
-Örneğin:
-
-```text
-Median repeat-purchase interval is 31 days.
-90% of observed intervals are below 84 days.
-Repurchase timing is highly variable.
-```
-
-Bu cümleler yeni bir hesap yapmaz.
-
-Sadece ekrandaki sayıların daha hızlı okunmasını sağlar.
-
-Asıl karar yine analizi yapan kişiye aittir.
-
----
-
-# 20. `churn_analysis(90)` ne yapıyor?
-
-```python
-analysis.churn_analysis(90)
-```
-
-Bu örnekte sistem şunu sorar:
-
-> Son alışverişinin üzerinden 90 günden fazla zaman geçen kaç müşterimiz var?
-
-Sonra alışveriş yapmış kullanıcıları iki gruba ayırır:
-
-```text
-90 gün veya daha az geçmiş
-→ active_purchaser
-
-90 günden fazla geçmiş
-→ churned
-```
-
-Hiç alışveriş yapmamışlar ayrı tutulur.
-
----
-
-# 21. Churn rate nasıl hesaplanıyor?
 
 Formül:
 
 ```text
-churn olmuş alışveriş yapan kullanıcılar
----------------------------------------
-tüm alışveriş yapan kullanıcılar
+Purchasers / Users
 ```
 
 Örnek:
 
 ```text
-Toplam kullanıcı: 1.000.000
-Alışveriş yapan: 200.000
-Churn olmuş: 60.000
+Users      = 240.000
+Purchasers = 72.000
+Purchaser rate = %30
 ```
 
-Doğru hesap:
+Bu değer klasik GA4 e-ticaret dönüşüm oranı değildir. Oturum veya event bazında değil, kullanıcı bazında hesaplanır.
+
+## Repeat rate
+
+Formül:
 
 ```text
-60.000 / 200.000 = %30
+Repeat purchasers / Purchasers
 ```
-
-Yanlış hesap:
-
-```text
-60.000 / 1.000.000 = %6
-```
-
-Çünkü hiç alışveriş yapmamış 800.000 kullanıcı zaten bu churn hesabının kitlesinde değildir.
-
----
-
-# 22. Active Purchasers
-
-Seçilen gün sınırını henüz aşmamış alışveriş yapan kullanıcılardır.
-
-Örneğin sınır 90 günse ve kullanıcı son alışverişini 40 gün önce yaptıysa aktif sayılır.
-
-Bu “kesin geri gelecek” anlamına gelmez.
-
-Sadece henüz churn sınırını aşmadığını gösterir.
-
----
-
-# 23. Churned Users
-
-Son alışverişinden bu yana geçen süre seçilen sınırı aşmış kullanıcı sayısıdır.
-
-Örneğin 90 günlük sınırda 110 gündür alışveriş yapmayan bir kullanıcı churn olur.
-
----
-
-# 24. Churned One-Time Buyers
-
-Sadece bir kez alışveriş yapmış ve sonra seçilen süre boyunca geri gelmemiş kullanıcılardır.
-
-Bu grup genelde önemlidir çünkü şunu gösterir:
-
-> İlk alışverişi yaptırıyoruz ama ikinci alışverişi getiremiyoruz mu?
-
-Bu durum yeni müşteri kazanımı sonrası devamlılık problemi olabilir.
-
----
-
-# 25. Churned Repeat Buyers
-
-Daha önce birden fazla alışveriş yapmış ama sonra uzun süre geri gelmemiş kullanıcılardır.
-
-Bu grup one-time müşterilerden farklı yorumlanmalıdır.
-
-Çünkü bu kişiler daha önce alışkanlık göstermiştir.
-
-Böyle bir kitlenin kaybı daha dikkat çekici olabilir.
-
----
-
-# 26. Churned Revenue Share ne demek?
-
-Bu değer churn olmuş kullanıcıların geçmişte ürettiği gelirin, bütün alışveriş yapan kullanıcıların geçmiş gelirine oranıdır.
 
 Örnek:
 
 ```text
-Churn rate = %25
-Churned revenue share = %40
+Purchasers        = 72.000
+Repeat purchasers = 26.000
+Repeat rate       = %36,1
 ```
 
-Bu durumda churn olmuş kullanıcılar sayıca %25 iken geçmiş gelirin %40'ını üretmiş olabilir.
+Bu değer, satın alma yapan kullanıcıların ne kadarının birden fazla satın alma davranışı gösterdiğini özetler.
 
-Bu önemli bir işaret olabilir.
+## Revenue
 
-Ama bu değer:
+Kaynak GA4 purchase event'lerinden hesaplanan geçmiş gelir toplamıdır.
 
-```text
-%40 gelir kaybettik
-```
+Bu değerin finans sistemiyle birebir aynı olması beklenmemelidir. Aşağıdaki sorunlar fark yaratabilir:
 
-demek değildir.
-
-Aynı şekilde:
-
-```text
-gelecekte %40 gelir kaybedeceğiz
-```
-
-de değildir.
-
-Sadece bu kullanıcıların geçmişte ne kadar değer ürettiğini gösterir.
+- duplicate purchase event,
+- eksik purchase event,
+- hatalı para birimi,
+- refund bilgisinin farklı sistemde tutulması,
+- farklı gelir tanımları,
+- consent veya tagging eksikleri.
 
 ---
 
-# 27. Status Diagnostics tablosu nasıl okunmalı?
+# 8. `purchase_day_distribution()` — churn eşiklerinin temel hazırlık analizi
 
-Bu tabloda aktif, churn olmuş ve hiç alışveriş yapmamış kullanıcılar karşılaştırılır.
-
-Genelde şu bilgiler yer alır:
-
-- kullanıcı sayısı,
-- ortalama alışveriş sayısı,
-- ortanca alışveriş sayısı,
-- ortalama gelir,
-- ortanca gelir,
-- son alışverişten bu yana geçen ortalama süre.
-
-Burada ortalama ile ortanca değeri birlikte okumak önemlidir.
-
-Örneğin:
-
-```text
-Ortalama gelir = 1.200 TL
-Ortanca gelir = 300 TL
+```python
+analysis.purchase_day_distribution()
 ```
 
-ise birkaç çok yüksek harcama yapan kullanıcı ortalamayı yukarı çekiyor olabilir.
+Bu fonksiyonun amacı doğrudan churn hesaplamak değildir. Önce tekrar alışveriş davranışının zaman yapısını ortaya çıkarır.
 
-Bu yüzden sadece ortalamaya bakmak yanlış izlenim verebilir.
+Ana soru şudur:
+
+> Aynı `user_id` bir satın alma yaptıktan sonra bir sonraki satın almayı genellikle kaç gün sonra yapmaktadır?
+
+## 8.1 Hesaplama mantığı
+
+Her kullanıcı için farklı satın alma günleri sıralanır.
+
+Örnek kullanıcı A:
+
+```text
+5 Ocak
+20 Ocak
+18 Şubat
+```
+
+Aralıklar:
+
+```text
+5 Ocak → 20 Ocak  = 15 gün
+20 Ocak → 18 Şubat = 29 gün
+```
+
+Örnek kullanıcı B:
+
+```text
+10 Mart
+10 Mart
+25 Nisan
+```
+
+Aynı gün içindeki iki satın alma, gün aralığı analizinde tek gün kabul edilir. Bu nedenle yalnızca:
+
+```text
+10 Mart → 25 Nisan = 46 gün
+```
+
+aralığı oluşur.
+
+Bu yaklaşım, aynı gün içinde birden fazla sipariş verilmesinin satın alma süresi dağılımını sıfır günlük aralıklarla bozmasını engeller.
 
 ---
 
-# 28. Purchaser Status grafiği nasıl okunmalı?
+# 9. Gap observations neden kullanıcı sayısından farklıdır?
 
-Bu grafik aktif ve churn olmuş alışveriş yapan kullanıcı sayılarını yan yana gösterir.
+`Gap observations`, hesaplanan toplam ardışık satın alma aralığı sayısıdır.
+
+Bir kullanıcı 2 farklı günde alışveriş yaptıysa 1 aralık üretir.
+
+Bir kullanıcı 5 farklı günde alışveriş yaptıysa 4 aralık üretir.
 
 Örnek:
 
 ```text
-Aktif: 120.000
-Churn: 80.000
+Repeat purchasers = 10.000
+Gap observations  = 28.500
 ```
 
-Bu grafik doğrudan kullanıcı hacmini gösterir.
+Bu normaldir. Bazı kullanıcılar birden çok satın alma aralığı üretmiştir.
 
-Yüzde görmek için ayrıca churn rate'e bakmak gerekir.
+Bu nedenle dağılımdaki yüzdeler kullanıcı yüzdesi olarak değil, **satın alma aralıklarının yüzdesi** olarak yorumlanmalıdır.
 
 ---
 
-# 29. Churn Rate by Purchase Frequency grafiği nasıl okunmalı?
+# 10. Ortalama ve median birlikte nasıl incelenir?
 
-Kullanıcılar yaptıkları toplam alışveriş sayısına göre gruplara ayrılır:
+## Ortalama
 
-```text
-1 alışveriş
-2 alışveriş
-3–5 alışveriş
-6+ alışveriş
-```
-
-Her grubun churn oranı ayrı hesaplanır.
+Bütün satın alma aralıklarının aritmetik ortalamasıdır.
 
 Örnek:
 
 ```text
-1 alışveriş   → %52 churn
-2 alışveriş   → %34 churn
-3–5 alışveriş → %19 churn
-6+ alışveriş  → %10 churn
+12, 16, 18, 21, 190
 ```
 
-Bu bize şunu düşündürebilir:
+Ortalama uzun 190 günlük aralık nedeniyle belirgin biçimde yükselir.
 
-> Daha sık alışveriş yapan kullanıcıların geri gelmeme oranı daha düşük.
+## Median / P50
 
-Ama buradan:
+Sıralanmış değerlerin ortasındaki değerdir. Uzun uç değerlerden ortalamaya göre daha az etkilenir.
+
+Örnek çıktı:
 
 ```text
-Bir kullanıcıya daha fazla alışveriş yaptırırsak churn kesin düşer
+Mean   = 58 gün
+Median = 31 gün
 ```
 
-gibi bir sonuç çıkarılamaz.
+Bu fark, dağılımda uzun bekleme süreleri bulunduğunu düşündürür.
 
-Bu sadece iki durum arasında bir ilişki olduğunu gösterir.
+Bu durumda `58 gün` doğrudan churn sınırı olarak alınmamalıdır. Ortalama, az sayıdaki uzun aralık nedeniyle yukarı çekilmiş olabilir.
+
+Başka bir örnek:
+
+```text
+Mean   = 34 gün
+Median = 31 gün
+```
+
+Ortalama ile median birbirine yakınsa dağılımın merkezi daha dengeli olabilir.
 
 ---
 
-# 30. Threshold Sensitivity grafiği ne işe yarıyor?
+# 11. P25, P75, P90 ve P95 nasıl yorumlanır?
 
-Bu grafik seçtiğimiz gün sayısının sonucu ne kadar değiştirdiğini gösterir.
-
-Örneğin asıl seçimimiz 90 gün olsun.
-
-Araç 60, 75, 90, 105, 120 gibi farklı günlerde churn oranını tekrar hesaplar.
+Yüzdelikler, satın alma aralıklarının dağılımında belirli noktaları gösterir.
 
 Örnek:
 
 ```text
-60 gün  → %36
-75 gün  → %31
-90 gün  → %27
-105 gün → %24
-120 gün → %21
+P25 = 17 gün
+P50 = 29 gün
+P75 = 48 gün
+P90 = 82 gün
+P95 = 121 gün
 ```
 
-Bu çok önemli bir kontroldür.
-
-Çünkü churn oranı seçtiğimiz gün sayısına bağlıdır.
-
-Eğer sonuçlar şöyleyse:
+Bu çıktı şu şekilde okunur:
 
 ```text
-75 gün  → %30
-90 gün  → %29
-105 gün → %28
+Aralıkların yaklaşık %25'i 17 gün veya daha kısa.
+Aralıkların yaklaşık %50'si 29 gün veya daha kısa.
+Aralıkların yaklaşık %75'i 48 gün veya daha kısa.
+Aralıkların yaklaşık %90'ı 82 gün veya daha kısa.
+Aralıkların yaklaşık %95'i 121 gün veya daha kısa.
 ```
 
-seçilen gün sayısı biraz değişse bile sonuç çok değişmiyor demektir.
+Bu değerler churn eşiklerinin seçimi için en önemli referanslardan biridir.
 
-Ama şöyleyse:
+### Neden P90 ve P95 özellikle önemlidir?
 
-```text
-75 gün  → %42
-90 gün  → %29
-105 gün → %18
-```
+Churn tanımı genellikle normal tekrar satın alma davranışının dışına çıkan kullanıcıları ayırmak ister.
 
-sonuç seçilen güne çok hassastır.
+P90 = 82 gün ise gözlenen satın alma aralıklarının yalnızca yaklaşık %10'u 82 günden uzundur.
 
-Bu durumda sadece “churn oranımız %29” demek yanıltıcı olabilir.
+Bu nedenle 80–90 gün bandı churn için incelenebilecek aday bölgelerden biri olabilir.
 
-Daha doğru anlatım şudur:
-
-> 90 günlük tanımda churn %29. 75 güne çekildiğinde %42, 105 güne çıkarıldığında %18 oluyor.
-
-Böylece yöneticiler sonucun seçilen kurala bağlı olduğunu görür.
+Ancak P90 otomatik olarak doğru churn threshold değildir. İş modelinin doğal satın alma döngüsü ayrıca değerlendirilmelidir.
 
 ---
 
-# 31. Gap Coverage ne demek?
+# 12. IQR ne gösterir?
 
-Bu değer seçtiğimiz churn gününün geçmiş satın alma aralıklarının ne kadarını kapsadığını gösterir.
+IQR şu şekilde hesaplanır:
+
+```text
+IQR = P75 - P25
+```
 
 Örnek:
 
 ```text
-Threshold = 90 gün
-Gap coverage = %91
+P25 = 20
+P75 = 50
+IQR = 30 gün
 ```
 
-Bu şu demektir:
+Orta %50'lik satın alma aralıklarının 30 günlük bir banda yayıldığını gösterir.
 
-> Geçmişte gözlediğimiz alışveriş aralıklarının yaklaşık %91'i 90 gün veya daha kısa olmuş.
+İkinci örnek:
 
-Bu, 90 günün mantıklı olup olmadığını değerlendirmede yardımcı olur.
+```text
+P25 = 10
+P75 = 120
+IQR = 110 gün
+```
 
-Ama tek başına “90 gün kesin doğrudur” anlamına gelmez.
+Bu durumda kullanıcı davranışı çok daha dağınıktır. Bazı kullanıcılar çok hızlı, bazıları çok geç tekrar alışveriş yapmaktadır.
+
+Geniş IQR varsa tek bir pre-churn ve churn sınırı bütün müşteri gruplarına eşit derecede uygun olmayabilir. Böyle bir durumda ileriki sürümlerde kategori, müşteri tipi veya satın alma sıklığına göre ayrı eşikler düşünmek daha doğru olabilir.
 
 ---
 
-# 32. Churn süresi nasıl seçilmeli?
+# 13. Standart sapma ve değişkenlik katsayısı nasıl kullanılır?
 
-Bu araç churn süresini otomatik seçmez.
+Standart sapma satın alma aralıklarının ne kadar dağıldığını gösterir.
 
-Çünkü her işin satın alma düzeni farklıdır.
+Değişkenlik katsayısı ise standart sapmayı ortalamaya oranlar:
 
-Örneğin:
+```text
+CV = standart sapma / ortalama
+```
 
-- market alışverişi yapan bir müşteri için 90 gün çok uzun olabilir,
-- mobilya alan bir müşteri için 90 gün çok kısa olabilir,
-- yıllık üyelikte 6 ay hiçbir şey ifade etmeyebilir,
-- mevsimsel ürünlerde bazı aylar doğal olarak sessiz olabilir.
+Pratik okuma:
 
-Bu yüzden karar verirken birlikte bakılması gerekenler şunlardır:
+```text
+CV < 0,5    → satın alma aralıkları görece düzenli
+0,5–1,0     → orta düzey değişkenlik
+CV >= 1,0   → satın alma aralıkları oldukça değişken
+```
 
-- median alışveriş aralığı,
-- P75,
-- P90,
-- P95,
-- alışveriş aralığı grafiği,
-- 30/60/90 günlük kapsama oranları,
-- farklı gün sınırlarında churn oranının nasıl değiştiği,
-- işin gerçek satın alma döngüsü.
+Bu aralıklar kesin istatistiksel kurallar değildir. Yalnızca tek bir churn eşiğinin ne kadar güvenli kullanılabileceğine dair yardımcı göstergelerdir.
 
 Örnek:
 
 ```text
 Median = 28 gün
-P75 = 48 gün
-P90 = 83 gün
-P95 = 125 gün
+P90    = 75 gün
+CV     = 0,42
 ```
 
-Bu durumda 60, 90 ve 120 gün gibi seçenekler karşılaştırılabilir.
+Bu yapı görece düzenli tekrar satın alma davranışına işaret edebilir.
 
-Sonra işin yapısına en mantıklı olan seçilir.
+Başka bir örnek:
+
+```text
+Median = 27 gün
+P90    = 190 gün
+CV     = 1,45
+```
+
+Median benzer görünse de kullanıcıların önemli bir kısmı çok farklı satın alma döngülerine sahiptir. Tek bir global eşik daha dikkatli değerlendirilmelidir.
 
 ---
 
-# 33. HTML dashboard ne işe yarıyor?
+# 14. Purchase-gap histogram nasıl incelenmelidir?
+
+Histogram satın alma aralıklarını şu gün gruplarında gösterir:
+
+```text
+0–7
+8–14
+15–30
+31–60
+61–90
+91–180
+181–365
+366+
+```
+
+Bu grafik yüzdeliklerin arkasındaki dağılım şeklini görmeyi sağlar.
+
+## Örnek A — belirgin kısa satın alma döngüsü
+
+```text
+0–7       düşük
+8–14      orta
+15–30     çok yüksek
+31–60     yüksek
+61–90     düşük
+91+       çok düşük
+```
+
+Bu görünümde kullanıcıların büyük kısmı ilk 60 gün içinde tekrar satın almaktadır. Pre-churn eşiği 45–60 gün bandında, churn eşiği 75–90 gün bandında test edilebilir.
+
+## Örnek B — iki farklı kullanıcı davranışı
+
+```text
+15–30     yüksek
+31–60     düşük
+91–180    yeniden yüksek
+```
+
+Dağılım iki ayrı tepe gösteriyorsa tek tip satın alma döngüsü olmadığı düşünülebilir. Örneğin:
+
+- sık alınan tüketim ürünü müşterileri,
+- daha seyrek alınan yüksek fiyatlı ürün müşterileri
+
+aynı veri içinde bulunabilir.
+
+Bu durumda tek eşik kullanılmadan önce kategori veya müşteri tipi kırılımı incelenmelidir.
+
+## Örnek C — uzun kuyruk
+
+İlk 30–60 günde yoğunluk yüksek olduğu halde 181–365 ve 366+ gruplarında da kayda değer gözlem varsa dağılım uzun kuyrukludur.
+
+Bu durum şunlardan kaynaklanabilir:
+
+- mevsimsellik,
+- kampanya dönemleri,
+- uzun ürün yenileme süresi,
+- çok farklı müşteri tipleri,
+- çok uzun veri geçmişi.
+
+Histogramdaki en yüksek bar doğrudan churn eşiği olarak seçilmemelidir.
+
+---
+
+# 15. Cumulative repeat-purchase coverage nasıl okunmalıdır?
+
+Bu grafik şu soruya cevap verir:
+
+> Gözlenen satın alma aralıklarının yüzde kaçı belirli gün sınırının içinde kalmaktadır?
+
+Örnek:
+
+```text
+30 gün  → %42
+45 gün  → %61
+60 gün  → %74
+90 gün  → %89
+120 gün → %94
+180 gün → %98
+```
+
+Bu durumda:
+
+- aralıkların %74'ü 60 gün veya daha kısa,
+- %89'u 90 gün veya daha kısa,
+- %94'ü 120 gün veya daha kısadır.
+
+Bu çıktı pre-churn ve churn sınırları için doğrudan referans sağlar.
+
+Örneğin:
+
+```text
+Pre-churn threshold = 60 gün
+Churn threshold     = 90 gün
+```
+
+seçilirse normal satın alma aralıklarının yaklaşık %74'ü pre-churn başlangıcından önce gerçekleşmiş, yaklaşık %89'u churn sınırından önce gerçekleşmiş olur.
+
+Ancak coverage kullanıcı yüzdesi değildir. Satın alma aralıklarının yüzdesidir.
+
+---
+
+# 16. Pre-churn ve churn threshold nasıl seçilmelidir?
+
+Eşik seçimi yalnızca tek bir metriğe bakılarak yapılmamalıdır. En sağlıklı yaklaşım birkaç göstergenin birlikte değerlendirilmesidir.
+
+## Adım 1 — veri geçmişinin yeterli olup olmadığı kontrol edilir
+
+Churn eşiği 120 gün olarak test edilecekse veri geçmişinin 120 günden belirgin biçimde uzun olması gerekir.
+
+Örneğin sadece son 90 günlük veri varsa 120 günlük churn analizi güvenilir değildir.
+
+Pratik olarak seçilen churn gününden daha uzun bir gözlem penceresi bulunmalıdır. Tekrar davranışının görülebilmesi için tercihen birkaç satın alma döngüsü kapsanmalıdır.
+
+## Adım 2 — median ve P75 ile normal tekrar davranışı anlaşılır
+
+Median ve P75, kullanıcıların büyük bölümünün ne kadar sürede tekrar alışveriş yaptığını gösterir.
+
+Örnek:
+
+```text
+Median = 28 gün
+P75    = 50 gün
+```
+
+Bu durumda 50 güne kadar olan süre hâlâ yaygın tekrar satın alma davranışı içinde sayılabilir.
+
+Pre-churn eşiğini doğrudan 30 gün seçmek fazla erken olabilir; çünkü kullanıcıların yarısından fazlası zaten 28 gün civarında dönmektedir ve önemli bir bölümü 50 güne kadar normal davranış göstermektedir.
+
+## Adım 3 — P90 ve P95 ile üst sınır davranışı incelenir
+
+Örnek:
+
+```text
+P90 = 84 gün
+P95 = 126 gün
+```
+
+Bu durumda 90 günlük churn eşiği normal tekrar satın alma davranışının üst tarafına yakın bir noktadadır.
+
+120 günlük churn eşiği ise daha temkinli bir churn tanımı oluşturur.
+
+## Adım 4 — coverage grafiği ile aday eşikler test edilir
+
+Örnek:
+
+```text
+60 gün coverage  = %76
+75 gün coverage  = %84
+90 gün coverage  = %90
+120 gün coverage = %95
+```
+
+Bu çıktıda örnek adaylar şöyle olabilir:
+
+```text
+Pre-churn = 60 veya 75 gün
+Churn     = 90 veya 120 gün
+```
+
+Bu yalnızca başlangıç adaylarıdır. İş modeli kontrolü yapılmadan kesinleştirilmemelidir.
+
+## Adım 5 — işin doğal satın alma döngüsü kontrol edilir
+
+Aynı yüzdelik değerler farklı sektörlerde farklı anlam taşır.
+
+### Hızlı tüketim örneği
+
+Bir ürün normalde 20–30 günde yeniden alınması gereken bir ürünse:
+
+```text
+Median = 24
+P75 = 35
+P90 = 52
+```
+
+gibi bir yapıda:
+
+```text
+Pre-churn = 35–45 gün
+Churn = 55–70 gün
+```
+
+adayları incelenebilir.
+
+### Moda / dönemsel alışveriş örneği
+
+Müşterilerin doğal olarak daha seyrek alışveriş yaptığı bir kategoride:
+
+```text
+Median = 52
+P75 = 95
+P90 = 160
+```
+
+60 günlük churn eşiği çok agresif olabilir. Bu yapı için daha uzun eşikler gerekebilir.
+
+### Yıllık veya mevsimsel alışveriş örneği
+
+Yılda bir kez satın alınan ürünlerde standart gün bazlı churn yaklaşımı tek başına anlamlı olmayabilir. Bir önceki yılın aynı dönemine dönüş, sezon veya üyelik yenileme tarihi ayrıca değerlendirilmelidir.
+
+---
+
+# 17. Pre-churn threshold seçerken temel mantık
+
+Pre-churn, henüz churn olmamış ancak normal geri dönüş davranışının dışına çıkmaya başlayan kullanıcıları işaretlemek için kullanılır.
+
+Bu nedenle pre-churn eşiğinin amacı churn eşiğinden önce aksiyon alınabilecek bir alan oluşturmaktır.
+
+Örnek:
+
+```text
+Median = 30
+P75 = 52
+P90 = 88
+P95 = 130
+```
+
+Olası tanım:
+
+```text
+Pre-churn threshold = 60 gün
+Churn threshold = 90 gün
+```
+
+Bu seçimde:
+
+```text
+0–60 gün  → normal/aktif alan
+61–90 gün → normal davranışın üst tarafına çıkmış, müdahale edilebilir alan
+90+ gün   → churn alanı
+```
+
+Başka bir senaryoda kullanıcıların %85'i 45 gün içinde tekrar satın alıyorsa pre-churn 60 gün yerine 45–50 gün civarında daha anlamlı olabilir.
+
+Pre-churn için tek bir evrensel formül yoktur. Ama genel amaç churn sınırından önce, iş açısından aksiyon alınabilecek yeterli zaman bırakmaktır.
+
+---
+
+# 18. Churn threshold seçerken temel mantık
+
+Churn eşiği, kullanıcının normal tekrar satın alma davranışından yeterince uzaklaştığı noktayı temsil etmelidir.
+
+Aşağıdaki göstergeler birlikte incelenmelidir:
+
+- P90,
+- P95,
+- cumulative coverage,
+- histogramın uzun kuyruğu,
+- ürün yenileme süresi,
+- kampanya ve sezon etkisi,
+- müşteri segmentleri,
+- seçilen eşiğin CRM veya pazarlama kullanım amacı.
+
+Örnek:
+
+```text
+P75 = 50
+P90 = 85
+P95 = 125
+90 günlük coverage = %91
+```
+
+90 günlük churn eşiği makul bir başlangıç adayı olabilir.
+
+Ancak marka, müşterilerin 3–4 ayda bir alışveriş yapmasının normal olduğunu biliyorsa 90 gün fazla kısa kalabilir. İş bilgisi istatistiksel dağılımın önüne geçebilir.
+
+---
+
+# 19. Üç farklı threshold örneği
+
+## Senaryo 1 — düzenli tekrar satın alma
+
+```text
+Median = 25
+P75 = 40
+P90 = 62
+P95 = 80
+CV = 0,45
+```
+
+Dağılım görece düzenlidir.
+
+Aday yaklaşım:
+
+```text
+Pre-churn = 45–50
+Churn = 70–80
+```
+
+## Senaryo 2 — orta düzey değişkenlik
+
+```text
+Median = 32
+P75 = 60
+P90 = 95
+P95 = 145
+CV = 0,85
+```
+
+Aday yaklaşım:
+
+```text
+Pre-churn = 60–75
+Churn = 100–120
+```
+
+Duyarlılık analizi özellikle önemlidir.
+
+## Senaryo 3 — çok dağınık davranış
+
+```text
+Median = 30
+P75 = 95
+P90 = 220
+P95 = 340
+CV = 1,60
+```
+
+Tek global eşik risklidir. Önce aşağıdaki kırılımlar önerilir:
+
+- ürün kategorisi,
+- müşteri tipi,
+- satın alma sıklığı,
+- gelir seviyesi,
+- ilk satın alma kanalı,
+- coğrafi veya kampanya grubu.
+
+---
+
+# 20. `churn_analysis(pre_churn_threshold, churn_threshold)`
+
+Örnek:
+
+```python
+analysis.churn_analysis(60, 90)
+```
+
+Kurallar:
+
+```text
+purchase_count = 0
+→ never_purchased
+
+purchase_count > 0
+ve days_since_last_purchase <= 60
+→ active_purchaser
+
+purchase_count > 0
+ve 60 < days_since_last_purchase <= 90
+→ pre_churn
+
+purchase_count > 0
+ve days_since_last_purchase > 90
+→ churned
+```
+
+`pre_churn_threshold`, `churn_threshold` değerinden küçük olmalıdır.
+
+---
+
+# 21. Pre-churn rate ve churn rate nasıl hesaplanır?
+
+Her iki oranın paydası alışveriş yapan kullanıcı kitlesidir.
+
+## Pre-churn rate
+
+```text
+pre_churn kullanıcı / tüm purchasers
+```
+
+## Churn rate
+
+```text
+churned kullanıcı / tüm purchasers
+```
+
+Örnek:
+
+```text
+Purchasers = 100.000
+Active = 55.000
+Pre-churn = 18.000
+Churned = 27.000
+```
+
+Sonuç:
+
+```text
+Pre-churn rate = %18
+Churn rate = %27
+```
+
+Hiç satın alma yapmamış kullanıcılar bu oranlara dahil edilmez.
+
+---
+
+# 22. Active / Pre-churn / Churned dağılımı nasıl yorumlanır?
+
+Örnek A:
+
+```text
+Active    = %68
+Pre-churn = %8
+Churned   = %24
+```
+
+Pre-churn havuzu görece küçüktür. Churn zaten yüksekse müdahale geç kalıyor olabilir veya churn eşiği uzun tutulmuş olabilir.
+
+Örnek B:
+
+```text
+Active    = %45
+Pre-churn = %30
+Churned   = %25
+```
+
+Kullanıcıların önemli bölümü pre-churn alanındadır. Yakın dönemde churn oranını artırabilecek büyük bir risk havuzu bulunduğu düşünülebilir.
+
+Örnek C:
+
+```text
+Active    = %80
+Pre-churn = %15
+Churned   = %5
+```
+
+Bu sonuç güçlü geri dönüş davranışına işaret edebilir. Ancak churn eşiğinin gereğinden uzun seçilip seçilmediği ayrıca kontrol edilmelidir.
+
+---
+
+# 23. One-time ve repeat kullanıcılar neden ayrı incelenmelidir?
+
+Pre-churn ve churn çıktılarında tek alışveriş yapanlarla tekrar alışveriş yapan kullanıcılar farklı anlam taşır.
+
+## Churned one-time buyers
+
+İlk alışverişten sonra ikinci alışverişe hiç geçememiş ve churn sınırını aşmış kullanıcılardır.
+
+Bu grup için problem genellikle ilk alışveriş sonrası devamlılık olabilir.
+
+## Churned repeat buyers
+
+Geçmişte birden fazla satın alma yapmış, ancak daha sonra churn sınırını aşmış kullanıcılardır.
+
+Bu grup daha önce alışkanlık veya bağlılık göstermiştir. Geri kazanım açısından ayrı değerlendirilmesi daha anlamlı olabilir.
+
+Örnek:
+
+```text
+Churned users = 30.000
+Churned one-time = 22.000
+Churned repeat = 8.000
+```
+
+Churn kitlesinin çoğu tek alışveriş yapanlardan oluşuyorsa öncelik ikinci alışverişi artıran stratejilere verilebilir.
+
+---
+
+# 24. Pre-churn ve churn gelir payları nasıl yorumlanır?
+
+## Pre-churn revenue share
+
+Pre-churn kullanıcıların geçmişte ürettiği gelirin bütün purchasers gelirine oranıdır.
+
+## Churned revenue share
+
+Churn olmuş kullanıcıların geçmişte ürettiği gelirin bütün purchasers gelirine oranıdır.
+
+Örnek:
+
+```text
+Pre-churn rate = %15
+Pre-churn revenue share = %28
+```
+
+Pre-churn kullanıcılar sayı olarak %15 iken geçmiş gelirin %28'ini oluşturuyorsa bu kitlenin ortalama değeri daha yüksek olabilir.
+
+Başka bir örnek:
+
+```text
+Churn rate = %30
+Churned revenue share = %12
+```
+
+Churn olan kullanıcı sayısı yüksek olsa da bu grubun geçmiş gelir katkısı düşük olabilir. Churn kitlesi büyük ölçüde düşük değerli veya tek seferlik kullanıcılardan oluşuyor olabilir.
+
+Bu metrikler **kaybedilen gelir** değildir. Gelecekte kaybedilecek geliri tahmin etmez. Sadece mevcut grupların geçmiş gelir katkısını gösterir.
+
+---
+
+# 25. Status diagnostics tablosu nasıl incelenir?
+
+Tablo active, pre-churn ve churned kullanıcıları aşağıdaki alanlarda karşılaştırır:
+
+- kullanıcı sayısı,
+- ortalama satın alma sayısı,
+- ortanca satın alma sayısı,
+- ortalama gelir,
+- ortanca gelir,
+- son satın almadan geçen ortalama gün,
+- son satın almadan geçen ortanca gün.
+
+Örnek:
+
+```text
+                 Avg purchases   Avg revenue
+Active                4,8            1.250
+Pre-churn             3,9            1.480
+Churned               1,7              410
+```
+
+Pre-churn grubunun ortalama gelirinin active gruptan yüksek olması, değerli müşterilerin bir bölümünün risk alanına geçtiğini gösterebilir.
+
+Başka bir örnek:
+
+```text
+Active avg revenue  = 900
+Active median revenue = 240
+```
+
+Ortalama ile ortanca arasındaki büyük fark, az sayıdaki yüksek gelirli kullanıcının ortalamayı yukarı çektiğini gösterir. Bu nedenle gelir karşılaştırmasında ortalama ve median birlikte değerlendirilmelidir.
+
+---
+
+# 26. Purchase frequency bazında pre-churn ve churn nasıl yorumlanır?
+
+Kullanıcılar toplam satın alma sayılarına göre gruplandırılır:
+
+```text
+1 purchase
+2 purchases
+3–5 purchases
+6+ purchases
+```
+
+Her grupta pre-churn ve churn oranları ayrı hesaplanır.
+
+Örnek:
+
+```text
+                 Pre-churn   Churn
+1 purchase          %18       %44
+2 purchases         %16       %29
+3–5 purchases       %12       %17
+6+ purchases         %8        %7
+```
+
+Bu tablo, satın alma sayısı arttıkça churn oranının düştüğünü gösterebilir.
+
+Ancak bu ilişki nedensellik değildir. “Daha fazla satın alma yaptırmak churnü otomatik düşürür” sonucu çıkarılmamalıdır.
+
+İş açısından şu sorular incelenebilir:
+
+- Churn sorunu özellikle tek alışveriş yapanlarda mı yoğun?
+- İkinci satın alma kritik bir eşik mi?
+- 6+ purchase kitlesinde pre-churn oranı yükseliyor mu?
+- Çok değerli tekrar müşterilerinin risk alanına girmesi ayrı kampanya gerektiriyor mu?
+
+---
+
+# 27. Churn threshold sensitivity nasıl yorumlanır?
+
+Araç, seçilen churn gününün çevresindeki alternatif eşiklerde churn oranını yeniden hesaplar.
+
+Örnek:
+
+```text
+60 gün  → %39
+75 gün  → %33
+90 gün  → %28
+105 gün → %25
+120 gün → %22
+150 gün → %18
+```
+
+Bu grafik şu soruya cevap verir:
+
+> Churn oranı seçilen gün sınırına ne kadar bağlıdır?
+
+## Stabil örnek
+
+```text
+75 gün  → %29
+90 gün  → %28
+105 gün → %27
+```
+
+Sonuç eşik değişimine çok hassas değildir.
+
+## Hassas örnek
+
+```text
+75 gün  → %41
+90 gün  → %28
+105 gün → %18
+```
+
+Küçük gün değişiklikleri churn oranını ciddi biçimde değiştiriyorsa tek bir churn oranını kesin gerçek gibi sunmak doğru değildir.
+
+Raporlama örneği:
+
+> 90 günlük churn tanımında churn oranı %28'dir. Eşik 75 güne indirildiğinde %41, 105 güne çıkarıldığında %18 olmaktadır.
+
+---
+
+# 28. Pre-churn ve churn gap coverage nasıl yorumlanır?
+
+Analiz iki ayrı kapsama değeri üretir:
+
+```text
+pre_churn_gap_coverage
+churn_gap_coverage
+```
+
+Örnek:
+
+```text
+Pre-churn threshold = 60
+Pre-churn gap coverage = %74
+
+Churn threshold = 90
+Churn gap coverage = %90
+```
+
+Bu şu anlama gelir:
+
+- gözlenen tekrar satın alma aralıklarının %74'ü 60 gün veya daha kısa,
+- %90'ı 90 gün veya daha kısadır.
+
+Bu yapı, 60–90 gün arasını pre-churn alanı olarak kullanmanın geçmiş davranışla uyumunu kontrol etmeye yardımcı olur.
+
+---
+
+# 29. Eşik seçiminde önerilen karar süreci
+
+Tek bir otomatik formül yerine aşağıdaki sıra önerilir:
+
+```text
+1. Veri tarihçesi ve purchase tracking kontrol edilir
+2. Median, P75, P90 ve P95 incelenir
+3. Histogramın şekli kontrol edilir
+4. Cumulative coverage incelenir
+5. Pre-churn için ilk aday oluşturulur
+6. Churn için ilk aday oluşturulur
+7. Ürün/kategori satın alma döngüsü ile karşılaştırılır
+8. Churn sensitivity grafiği kontrol edilir
+9. One-time ve repeat kullanıcı sonuçları karşılaştırılır
+10. İlk kullanım sonrası eşikler periyodik olarak yeniden değerlendirilir
+```
+
+Eşikler bir defa belirlenip sonsuza kadar sabit bırakılmamalıdır. Kullanıcı davranışı, fiyat, kampanya sıklığı, ürün yapısı ve sezon değiştikçe satın alma döngüsü de değişebilir.
+
+---
+
+# 30. HTML dashboard nasıl kullanılmalıdır?
 
 `churn_analysis()` çalıştıktan sonra:
 
@@ -980,142 +1200,124 @@ ga4_churn_dashboard.html
 
 oluşturulur.
 
-Bu dosya sonuçların daha kolay paylaşılması için hazırlanır.
+Dashboard hızlı paylaşım için özet görünüm sağlar. Ana kullanım alanları:
 
-Dashboard'da özet olarak şunlar bulunur:
+- active / pre-churn / churned kullanıcı hacmini göstermek,
+- pre-churn ve churn oranlarını raporlamak,
+- durum gruplarının satın alma ve gelir seviyelerini karşılaştırmak,
+- analizin hangi eşiklerle üretildiğini açık biçimde göstermek.
 
-- seçilen churn günü,
-- toplam alışveriş yapan kullanıcı,
-- aktif kullanıcı,
-- churn olmuş kullanıcı,
-- churn oranı,
-- seçilen günün alışveriş aralıklarının ne kadarını kapsadığı,
-- churn olmuş kullanıcıların geçmiş gelir payı,
-- kullanıcı gruplarının karşılaştırması,
-- alışveriş sayısına göre churn oranı,
-- farklı gün seçeneklerinde churn oranı.
-
-Dashboard ayrı bir hesap yapmaz.
-
-Notebook'taki sonuçları daha düzenli gösterir.
+Dashboard yeni bir hesaplama yapmaz. Notebook ve BigQuery tablolarındaki sonuçların sunum katmanıdır.
 
 ---
 
-# 34. Sonuçları yorumlarken dikkat edilmesi gerekenler
+# 31. Analiz hangi durumlarda yanıltıcı olabilir?
 
-## GA4 kullanıcı kimliği gerçek müşteri olmayabilir
+## `user_id` kapsamı düşükse
 
-`user_pseudo_id` cihaz ve tarayıcı bazlıdır.
+GA4 kullanıcılarının yalnızca küçük bölümünde `user_id` varsa sonuç bütün kullanıcı tabanını temsil etmez.
 
-Bu nedenle aynı kişi birden fazla kullanıcı gibi görünebilir.
+## Purchase tracking hatalıysa
 
-Eğer şirketin sağlam bir `user_id` veya CRM müşteri kimliği varsa ileride analiz o seviyeye taşınabilir.
+Duplicate veya eksik purchase event'leri satın alma sayısını, gelir değerini ve satın alma aralıklarını doğrudan bozar.
 
-## Satın alma takibi hatalıysa churn sonucu da hatalı olur
+## Veri geçmişi kısa ise
 
-Özellikle şunlar kontrol edilmelidir:
+90 günlük veride 180 günlük churn tanımı üretmek mantıklı değildir.
 
-- `purchase` event'i doğru gönderiliyor mu?
-- aynı sipariş iki kere gönderiliyor mu?
-- gelir doğru geliyor mu?
-- eski dönemlerde takip kesintisi var mı?
+## Sezonluk iş modeli varsa
 
-## Veri geçmişi çok kısa olabilir
+Yaz tatili, okul dönemi, Black Friday, Ramazan, yılbaşı veya yıllık yenileme gibi dönemler satın alma aralıklarını ciddi biçimde değiştirebilir.
 
-Örneğin sadece son 3 aylık veri varsa 180 günlük churn hesabı yapmak mantıklı değildir.
+## Çok farklı ürün döngüleri aynı analizdeyse
 
-Çünkü kullanıcıları yeterince uzun süre gözlemlememiş oluruz.
+Gıda ürünü ve dayanıklı tüketim ürünü aynı marka altında analiz ediliyorsa tek churn eşiği iki müşteri davranışını iyi temsil etmeyebilir.
 
-## Aktif görünen kullanıcı gelecekte churn olabilir
+## Active etiketi yanlış anlaşılırsa
 
-Bir kullanıcı son alışverişini 20 gün önce yaptıysa ve sınır 90 günse aktif görünür.
+`active_purchaser` kullanıcının gelecekte kesinlikle tekrar alışveriş yapacağı anlamına gelmez. Yalnızca henüz pre-churn sınırını aşmadığını gösterir.
 
-Ama bu kullanıcının gelecekte geri gelip gelmeyeceğini bilmiyoruz.
+## Pre-churn etiketi tahmin olarak yorumlanırsa
 
-Bu araç geleceği tahmin etmez.
-
-## Mevsimsellik dikkate alınmıyor
-
-Bazı işler yılın belirli dönemlerinde yoğun olabilir.
-
-Örneğin okul, tatil, kışlık ürün, yıllık yenileme gibi yapılarda satın alma aralıkları yıl içinde doğal olarak değişebilir.
-
-Bu nedenle sonuç iş bilgisiyle birlikte değerlendirilmelidir.
+`pre_churn`, “bu kullanıcı kesin churn olacak” anlamına gelmez. Sadece son satın almadan geçen süreye göre tanımlanan risk bölgesidir.
 
 ---
 
-# 35. Sonucu yöneticilere nasıl anlatmak daha doğru olur?
+# 32. Sonuçların yönetime sunulması için örnek
 
-Tek başına:
+Zayıf anlatım:
 
 ```text
-Churn oranı %27
+Churn oranı %27.
 ```
 
-demek yerine şu şekilde anlatmak daha sağlıklıdır:
+Daha açıklayıcı anlatım:
 
 ```text
-90 günlük churn tanımında alışveriş yapan kullanıcıların %27'si churn olmuş görünüyor.
+Analiz, GA4'te user_id bulunan 82.000 satın alma yapmış kullanıcı üzerinden hesaplanmıştır.
 
-Geçmiş alışveriş aralıklarının %90'ı yaklaşık 84 günün altında.
-90 günlük sınır bu davranışın biraz üzerinde kalıyor.
+Tekrar satın alma aralıklarının medianı 31 gün, P90 değeri 86 gündür.
+60 gün pre-churn, 90 gün churn eşiği seçilmiştir.
 
-75 gün seçersek churn oranı %31'e,
-105 gün seçersek %24'e geliyor.
+Bu tanımda:
+- %56 active,
+- %17 pre-churn,
+- %27 churned durumundadır.
 
-Tek alışveriş yapanlarda churn oranı daha yüksek,
-6 ve üzeri alışveriş yapanlarda daha düşük.
+Pre-churn kullanıcılar geçmiş purchaser gelirinin %24'ünü oluşturmaktadır.
+Tek alışveriş yapan kullanıcıların churn oranı %46 iken 6+ alışveriş yapanlarda %9'dur.
+
+Churn eşiği 75 güne çekildiğinde oran %34'e, 105 güne çıkarıldığında %22'ye değişmektedir.
 ```
 
-Böyle bir anlatım hem sayıyı hem de sayının nasıl oluştuğunu açıklar.
+Bu format hem sonucu hem de sonucun hangi varsayımla üretildiğini görünür hale getirir.
 
 ---
 
-# 36. Analizi paylaşmadan önce kısa kontrol listesi
+# 33. Analiz öncesi ve sonrası kontrol listesi
 
-- [ ] Doğru Google Cloud projesini kullandım mı?
-- [ ] Doğru GA4 dataset'ini seçtim mi?
-- [ ] Kaynak tablo doğru mu?
-- [ ] Verinin son tarihi güncel mi?
-- [ ] `purchase` takibi doğru mu?
-- [ ] Gelir değerleri güvenilir mi?
-- [ ] Yeterince uzun veri geçmişim var mı?
-- [ ] Median alışveriş aralığına baktım mı?
-- [ ] P75, P90 ve P95 değerlerini kontrol ettim mi?
-- [ ] 30/60/90 günlük kapsama oranlarını gördüm mü?
-- [ ] Farklı churn günlerinde sonuç ne kadar değişiyor baktım mı?
-- [ ] Tek alışveriş yapanlarla tekrar alışveriş yapanları ayrı değerlendirdim mi?
-- [ ] Churn olmuş kullanıcıların geçmiş gelir payını “kaybedilen gelir” diye sunmadım mı?
-- [ ] `user_pseudo_id` değerinin gerçek müşteri sayısı olmadığını dikkate aldım mı?
+- [ ] `user_id` implementasyonu yeterli kapsama sahip mi?
+- [ ] Kaynak dataset doğru mu?
+- [ ] Kaynak tablonun son tarihi güncel mi?
+- [ ] `purchase` event'i doğru çalışıyor mu?
+- [ ] Duplicate purchase kontrolü yapıldı mı?
+- [ ] Revenue değerleri güvenilir mi?
+- [ ] Veri geçmişi seçilecek churn gününden yeterince uzun mu?
+- [ ] Median ve P75 kontrol edildi mi?
+- [ ] P90 ve P95 kontrol edildi mi?
+- [ ] Histogram incelendi mi?
+- [ ] Cumulative coverage incelendi mi?
+- [ ] Pre-churn eşiği iş açısından aksiyon alınabilecek bir pencere bırakıyor mu?
+- [ ] Churn eşiği normal tekrar satın alma davranışının yeterince dışında mı?
+- [ ] Threshold sensitivity incelendi mi?
+- [ ] One-time ve repeat kullanıcılar ayrı yorumlandı mı?
+- [ ] Pre-churn ve churn revenue share “kaybedilen gelir” olarak adlandırılmadı mı?
+- [ ] Sonuçların yalnızca `user_id` bulunan kullanıcıları kapsadığı raporda belirtildi mi?
 
 ---
 
-# 37. En kısa haliyle bu analiz ne yapıyor?
+# 34. Kısa özet
 
-Bütün akışı tek cümlede özetlersek:
-
-> Kullanıcıların ne sıklıkla tekrar alışveriş yaptığını inceliyoruz, buna uygun bir gün sınırı seçiyoruz ve son alışverişinden beri bu sınırı geçen müşterileri churn olmuş olarak işaretliyoruz.
-
-Akış şu:
+Analizin temel yaklaşımı şu sırayı izler:
 
 ```text
-Önce maliyeti kontrol et
+GA4 user_id bulunan kullanıcıları al
         ↓
-Her kullanıcı için özet tablo oluştur
+Her kullanıcı için satın alma geçmişini özetle
         ↓
-Tekrar alışveriş yapanlar kaç günde bir geri geliyor bak
+Tekrar satın alma gün aralıklarını hesapla
         ↓
-Mantıklı bir gün sınırı seç
+Median / P75 / P90 / P95 ve dağılımı incele
         ↓
-Churn oranını hesapla
+Pre-churn ve churn için aday günler belirle
         ↓
-Farklı gün sınırlarında sonucun ne kadar değiştiğini kontrol et
+İş modelinin doğal satın alma döngüsü ile karşılaştır
         ↓
-Tek alışveriş yapanlarla sadık müşterileri ayrı ayrı yorumla
+Active / pre-churn / churned sınıflarını oluştur
+        ↓
+Satın alma sıklığı ve gelir farklarını incele
+        ↓
+Threshold sensitivity ile sonucun sağlamlığını kontrol et
 ```
 
-Bu araçtaki en önemli nokta churn oranının tek başına bir gerçek olmadığıdır.
-
-Churn oranı, seçtiğimiz gün sınırına göre oluşur.
-
-Bu yüzden en doğru kullanım şekli, churn oranını satın alma aralıkları ve farklı gün seçenekleriyle birlikte yorumlamaktır.
+Bu çalışmada churn oranı tek başına nihai sonuç değildir. En doğru yorum; satın alma aralıkları, seçilen pre-churn ve churn eşikleri, kullanıcı değerleri ve duyarlılık analizi birlikte değerlendirilerek yapılır.
