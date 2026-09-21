@@ -1,7 +1,7 @@
 CREATE OR REPLACE TABLE `{{PROJECT_ID}}.{{OUTPUT_DATASET_ID}}.churn_base` AS
 WITH raw AS (
   SELECT
-    user_pseudo_id,
+    user_id,
     SAFE.PARSE_DATE('%Y%m%d', event_date) AS event_date,
     event_name,
     (
@@ -12,7 +12,7 @@ WITH raw AS (
     ) AS ga_session_id,
     COALESCE(ecommerce.purchase_revenue, 0) AS purchase_revenue
   FROM `{{PROJECT_ID}}.{{DATASET_ID}}.{{TABLE_ID}}`
-  WHERE user_pseudo_id IS NOT NULL
+  WHERE user_id IS NOT NULL
     AND event_date IS NOT NULL
 ),
 analysis_context AS (
@@ -21,7 +21,7 @@ analysis_context AS (
 ),
 user_agg AS (
   SELECT
-    user_pseudo_id,
+    user_id,
     MIN(event_date) AS first_event_date,
     MAX(event_date) AS last_event_date,
     COUNT(*) AS event_count,
@@ -31,7 +31,7 @@ user_agg AS (
     MIN(IF(event_name = 'purchase', event_date, NULL)) AS first_purchase_date,
     MAX(IF(event_name = 'purchase', event_date, NULL)) AS last_purchase_date
   FROM raw
-  GROUP BY user_pseudo_id
+  GROUP BY user_id
 )
 SELECT
   u.*,
