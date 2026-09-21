@@ -1,76 +1,42 @@
 # GA4 Churn Toolkit
 
-Open-source, BigQuery-first churn analysis for GA4 ecommerce export data.
+Open-source, BigQuery-first churn analysis for GA4 ecommerce export data. The current version runs from Google Colab and uses **GA4 `user_id`** as the user key.
 
-The toolkit now runs through **Google Colab**. Colab is used only as the interface and orchestration layer; the heavy data processing still happens in BigQuery.
+## Important identity rule
 
-## Open in Colab
+Only rows where `user_id` is populated are included.
 
-Use the ready notebook:
+This means the analysis represents identified / logged-in users for which your GA4 implementation sends `user_id`. Anonymous users with only `user_pseudo_id` are excluded.
 
-[Open `ga4_churn_colab.ipynb`](notebooks/ga4_churn_colab.ipynb)
-
-The Colab workflow is:
-
-```text
-Install package
-→ Enter BigQuery source information
-→ Sign in with Google
-→ Dry run
-→ Create base table
-→ Review repeat-purchase intervals
-→ Run churn analysis
-→ View / download HTML dashboard
-```
+Because of this, results from this version should not be compared one-to-one with older `user_pseudo_id`-based results.
 
 ## Documentation
 
 - [Türkçe kullanım ve yorumlama rehberi](docs/ANALYSIS_GUIDE_TR.md)
-- [English analysis and interpretation guide](docs/ANALYSIS_GUIDE_EN.md)
+- [English analysis guide](docs/ANALYSIS_GUIDE_EN.md)
 
-## Colab inputs
+## Google Colab notebook
 
-The user only provides four source/output fields:
-
-```python
-PROJECT_ID = "your-gcp-project"
-DATASET_ID = "analytics_123456789"
-TABLE_ID = "events_*"
-OUTPUT_DATASET_ID = "ga4_churn"
-```
-
-In the Colab notebook these are shown as editable form fields.
-
-The churn threshold is selected only in the final churn step:
-
-```python
-CHURN_THRESHOLD = 90
-```
-
-## Google authentication
-
-The Colab notebook authenticates with the signed-in Google account:
-
-```python
-from google.colab import auth
-auth.authenticate_user()
-```
-
-That account must have permission to:
-
-- read the GA4 BigQuery export dataset,
-- run BigQuery jobs in the selected project,
-- create the output dataset or write tables to it.
-
-No service-account JSON file is required for the normal Colab flow.
+[Open the Colab notebook source](notebooks/ga4_churn_colab.ipynb)
 
 ## Install
-
-The ready notebook installs the package directly from GitHub:
 
 ```python
 %pip install -q --upgrade \
 "ga4-churn-toolkit @ git+https://github.com/yasinsariyildizz/ga4-churn-toolkit.git@main"
+```
+
+## Setup
+
+```python
+from ga4_churn import ChurnAnalysis
+
+analysis = ChurnAnalysis(
+    project_id="your-gcp-project",
+    dataset_id="analytics_123456789",
+    table_id="events_*",
+    output_dataset_id="ga4_churn",
+)
 ```
 
 ## Workflow
@@ -79,55 +45,42 @@ The ready notebook installs the package directly from GitHub:
 analysis.dry_run()
 analysis.create_base_table()
 analysis.purchase_day_distribution()
-analysis.churn_analysis(90)
+analysis.churn_analysis(60, 90)
 ```
 
-### `dry_run()`
-Checks estimated BigQuery scan volume before analysis tables are created.
-
-### `create_base_table()`
-Builds a one-row-per-`user_pseudo_id` table with purchase, session, revenue and last-purchase information.
-
-### `purchase_day_distribution()`
-Shows how many days typically pass between repeat purchase days and provides statistics and charts to help evaluate a sensible churn cutoff.
-
-### `churn_analysis(churn_threshold)`
-Classifies purchasers using the selected number of inactive days and produces churn KPIs, diagnostic comparisons, threshold sensitivity and an HTML dashboard.
-
-## HTML dashboard in Colab
-
-After churn analysis:
-
-```python
-churn_result = analysis.churn_analysis(90)
-```
-
-The notebook can display the generated dashboard inline and download it to the user's computer:
-
-```python
-from google.colab import files
-files.download(churn_result["dashboard_path"])
-```
-
-## Where does the data run?
-
-Even though the notebook is opened in Colab, raw GA4 data is **not downloaded into Colab for processing**.
-
-The flow remains:
+The last line means:
 
 ```text
-Google Colab
-    ↓
-Python package
-    ↓
-BigQuery SQL jobs
-    ↓
-BigQuery output tables
-    ↓
-Small summary results / charts in Colab
+0–60 days since last purchase   → active_purchaser
+61–90 days                      → pre_churn
+more than 90 days               → churned
 ```
 
-The source GA4 tables remain read-only.
+The first value is the **pre-churn threshold** and must be smaller than the churn threshold.
+
+## Main outputs
+
+### `create_base_table()`
+Creates one row per `user_id` with event, session, purchase, revenue and last-purchase information.
+
+### `purchase_day_distribution()`
+Shows how many days typically pass between consecutive purchase days for repeat purchasers. It includes percentile statistics, histogram and cumulative coverage.
+
+### `churn_analysis(pre_churn_threshold, churn_threshold)`
+Creates three purchaser states:
+
+- `active_purchaser`
+- `pre_churn`
+- `churned`
+
+It also returns:
+
+- active / pre-churn / churned user counts,
+- pre-churn and churn rates,
+- historical revenue shares,
+- purchase-frequency comparisons,
+- churn threshold sensitivity,
+- HTML dashboard.
 
 ## Output tables
 
@@ -137,21 +90,11 @@ purchase_day_gaps
 churn_users
 ```
 
-## Important measurement note
+The GA4 source tables are never modified.
 
-This is a descriptive purchase-based churn classification, not a churn prediction model.
+## Required GA4 setup
 
-Before using the output for CRM or retention decisions, validate:
-
-- `purchase` event quality,
-- duplicate purchase handling,
-- revenue implementation,
-- GA4 export completeness,
-- `user_pseudo_id` identity limitations,
-- data freshness,
-- whether the selected observation period is long enough for the chosen churn threshold.
-
-If `table_id="events_*"`, all matching historical export tables may be scanned. Use `dry_run()` first.
+`user_id` must be implemented in GA4 for this version to produce meaningful results. If your property does not send `user_id`, the analysis base may be empty or much smaller than your total GA4 user population.
 
 ## License
 
